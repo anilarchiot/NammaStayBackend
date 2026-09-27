@@ -1,60 +1,45 @@
-# NammaStayBackend
-Namma Stay backend Code . Property of Circle Company (LLC)
-# Namma Stay - Backend API Service ⚙️
+# NammaStay — backend
 
-The backend service for **Namma Stay**—a property and guest management system for modern hostels, boutique stays, and co-living spaces. It handles authentication, real-time bed inventory allocation, automated billing, guest ID processing, and notification pipelines.
+Database, security rules and server functions for NammaStay, running on **Supabase**.
+The website lives in the separate frontend repo (**NammaStayFrontend**, served by GitHub Pages).
 
----
+> GitHub doesn't run this code — it's stored here for history and backup.
+> Supabase runs it: the SQL is pasted into Supabase's SQL Editor, and the
+> functions are deployed by the GitHub Action in `.github/workflows/`.
 
-## 📌 Versioning & Release Tracking
+| Path | What it is |
+|---|---|
+| `supabase/SETUP_ALL.sql` | Complete database in one file (001 + 002 + 003 + 006 + 007 + 008). Paste once into SQL Editor on a new project. |
+| `supabase/migrations/001_schema.sql` | Tables, indexes, double-booking guard, triggers |
+| `supabase/migrations/002_security.sql` | Row Level Security, roles, private ID-photo bucket |
+| `supabase/migrations/003_functions.sql` | Every query the app uses (bookings, payments, reports, self check-in…) |
+| `supabase/migrations/006_marketing.sql` | Homepage contact form (leads) + admin |
+| `supabase/migrations/007_subscriptions.sql` | Plans, 15-day trial, UPI subscription payments, access enforcement |
+| `supabase/migrations/008_delete_booking.sql` | Delete bookings entered by mistake (copy kept in the activity log) |
+| `supabase/migrations/009_edit_guest.sql` | Edit guest profiles (name, phone, email, DOB, ID, photo, notes) |
+| `supabase/migrations/010_id_front_back.sql` | ID photos: front and back side |
+| `supabase/migrations/011_admin_panel.sql` | Admin panel: overview of all properties, per-property detail, suspend / reactivate |
+| `supabase/migrations/012_delete_guest.sql` | Delete a guest completely (profile, all bookings & payments, ID photos) |
+| `supabase/migrations/013_admin_add_property.sql` | Admin adds a property for a customer; owner linked by email on sign-up |
+| `supabase/migrations/014_hotels_homestays.sql` | Hotels & homestays: room capacity, adults/children, extra-guest charges |
+| `supabase/migrations/015_plans_by_type.sql` | Subscription prices by property type and size |
+| `supabase/setup/004_seed.sql` | Your hostel, rooms, 9 beds and owner login — edit the email first |
+| `supabase/setup/005_schedule.sql` | Nightly ID-photo cleanup — edit project ref + secret first |
+| `supabase/setup/undo_formc_badges_expenses.sql` | Only if you ran the earlier Form C / badges / expenses migration — removes it |
+| `supabase/functions/` | `notify-booking`, `notify-lead` (emails via Resend), `purge-id-docs` |
+| `supabase/tests/` | Security checks + lakhs-of-rows load test (test project only) |
+| `docs/GO-LIVE.md` | Step-by-step launch guide |
 
-This service adheres strictly to **[Semantic Versioning (SemVer)](https://semver.org/)** (`MAJOR.MINOR.PATCH`).
+## Secrets — never in this repo
+Set them in Supabase, not in files:
+```bash
+supabase secrets set RESEND_API_KEY=... MAIL_FROM="..." WEBHOOK_SECRET=... CRON_SECRET=... \
+  SITE_URL=https://thenammastay.com LEADS_NOTIFY_EMAIL=you@example.com
+```
+The only key that goes in the frontend is the **anon public** key (in its `assets/js/config.js`). The **service_role** key never goes anywhere public.
 
-* **Current API Version**: `v1.8.2`
-* **API Base Endpoint**: `/api/v1`
-
-### Versioning Protocol
-* **MAJOR (`1.0.0` → `2.0.0`)**: Breaking API schema changes, endpoint deprecations, or major database structural overhauls.
-* **MINOR (`1.8.0` → `1.9.0`)**: Backward-compatible new endpoints or feature additions (e.g., adding a new payment gateway driver).
-* **PATCH (`1.8.1` → `1.8.2`)**: Backward-compatible security patches, performance improvements, and bug fixes.
-
----
-
-## 🛠️ Required Resources & Tech Stack
-
-### Core Runtime & Frameworks
-* **Runtime Environment**: Node.js `v18.x.x` or `v20.x.x` (LTS recommended)
-* **Framework**: Express.js `v4.18+` (TypeScript `v5.0+`)
-* **Database**: PostgreSQL `v15+`
-* **ORM**: Prisma `v5+` / TypeORM
-* **In-Memory Cache & Queues**: Redis `v7.0+` (Session management, rate-limiting, background jobs)
-
-### Third-Party Services & Integrations
-* **Authentication**: JWT (JSON Web Tokens) with RSA-256 signatures & Refresh Token rotation.
-* **Payment Gateways**: Razorpay / Stripe Node SDKs (webhooks enabled for async payment processing).
-* **Cloud Storage**: AWS S3 or Google Cloud Storage (Encrypted bucket for guest ID document uploads).
-* **Messaging & Notifications**: Twilio / Gupshup SDK (WhatsApp and SMS verification/check-in alerts).
-* **Logging & Monitoring**: Winston / Pino logging with Sentry error tracking.
-
----
-
-## 📂 Repository & Project Structure
-
-```text
-backend/
-├── prisma/
-│   ├── migrations/          # Database migration history
-│   └── schema.prisma        # Database schema definitions
-├── src/
-│   ├── config/              # Database, Redis, and third-party API configs
-│   ├── controllers/         # Request handlers & HTTP routing logic
-│   ├── middleware/          # Auth guard, error handler, rate-limiter, validator
-│   ├── models/              # Data models / Prisma client wrappers
-│   ├── routes/              # Express API route modules (v1)
-│   ├── services/            # Core business logic (Payments, Bookings, Notifications)
-│   ├── utils/               # Shared helpers, loggers, and custom errors
-│   └── app.ts               # Express app initialization
-├── tests/                   # Integration and unit test suites (Jest / Supertest)
-├── .env.example             # Template for local environment variables
-├── package.json             # Dependencies and scripts (Version specified here)
-└── tsconfig.json            # TypeScript configuration
+## Making changes later
+1. Add a new numbered file, e.g. `supabase/migrations/007_something.sql`.
+2. Try it on a test Supabase project first.
+3. Run it on the live project in SQL Editor, then re-run `supabase/tests/01_security_checks.sql`.
+4. Commit it here so the history stays complete.
