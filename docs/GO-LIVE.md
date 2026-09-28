@@ -27,8 +27,8 @@ This guide lives in the **backend repo**. The website is in the separate **front
 | `login.html` + other `*.html`, `assets/` | The app. Works as a demo until `assets/js/config.js` is filled in. |
 | `assets/js/core.js` | Login check, roles, formatting, dialogs, notification bell. |
 | `assets/js/pages/*.js` | One script per screen; each calls the database functions. |
-| `supabase/migrations/001–003, 006–015` | The database structure: run in order (or `SETUP_ALL.sql`). |
-| `supabase/setup/004_seed.sql`, `005_schedule.sql` | One-time setup you edit before running. |
+| `supabase/migrations/001–003, 006` | The database structure: run in order (or `SETUP_ALL.sql`). |
+| `supabase/setup/004_seed.sql`, `005_schedule.sql` | One-time setup you edit before running (your email, project ref). |
 | `supabase/tests/01_security_checks.sql` | Security checks — run before launch and after every change. |
 | `supabase/tests/02_load_test.sql` | 1.5 lakh-booking load test — **separate test project only**. |
 | `supabase/functions/` | `notify-booking` (booking emails), `notify-lead` (homepage leads), `purge-id-docs` (privacy cleanup). |
@@ -52,18 +52,9 @@ Supabase → **SQL Editor** → New query. Paste and **Run** each file, in order
 1. `supabase/migrations/001_schema.sql` — tables, indexes, double-booking guard
 2. `supabase/migrations/002_security.sql` — row-level security, grants, private ID bucket
 3. `supabase/migrations/003_functions.sql` — every query the app uses
-4. `supabase/migrations/006_marketing.sql` — homepage contact form (leads)
-5. `supabase/migrations/007_subscriptions.sql` — plans, 15-day trial, UPI subscription payments
-6. `supabase/migrations/008_delete_booking.sql` — delete bookings entered by mistake
-7. `supabase/migrations/009_edit_guest.sql` — edit guest profiles
-8. `supabase/migrations/010_id_front_back.sql` — ID photos: front and back
-9. `supabase/migrations/011_admin_panel.sql` — admin panel & account suspension
-10. `supabase/migrations/012_delete_guest.sql` — delete a guest completely
-11. `supabase/migrations/013_admin_add_property.sql` — add a property for a customer
-12. `supabase/migrations/014_hotels_homestays.sql` — hotels & homestays: rooms, guests, extra-guest charges
-13. `supabase/migrations/015_plans_by_type.sql` — subscription prices by property type and size
+4. `supabase/migrations/006_marketing.sql` — homepage early-access form (leads)
 
-Shortcut: `supabase/SETUP_ALL.sql` contains all thirteen in one file — paste it once and Run.
+Shortcut: `supabase/SETUP_ALL.sql` contains all four in one file — paste it once and Run.
 
 If a file errors, fix and re-run that file only after dropping what it created (simplest on a new project: **Settings → General → Reset/delete project** and start again).
 
@@ -83,10 +74,8 @@ on conflict do nothing;
 ## 4. Lock down login
 
 **Authentication → Sign In / Providers → Email**
-- Keep **"Allow new users to sign up" ON** — owners start their free trial from `/signup.html`. New accounts can't see anything until they create their own property (Row Level Security), and each account can create only one.
-- Keep **"Confirm email" ON**, so every sign-up proves it owns the email.
+- Turn **off** "Allow new users to sign up". Only people you invite can get in.
 - Minimum password length: **10**.
-- Set up **custom SMTP** (below) *before* sharing the sign-up link — the built-in sender can't handle public sign-ups.
 
 **Authentication → URL Configuration**
 - Site URL: `https://thenammastay.in`
@@ -141,6 +130,7 @@ Also open **Advisors → Security Advisor** and **Performance Advisor** in Supab
    supabase functions deploy purge-id-docs  --no-verify-jwt
    ```
    (`--no-verify-jwt` is right here: these functions check their own secret header instead of a staff login.)
+   **Or let GitHub deploy them for you:** this repo has `.github/workflows/deploy-functions.yml`. Add two repository secrets on GitHub (Settings → Secrets and variables → Actions): `SUPABASE_ACCESS_TOKEN` (supabase.com → Account → Access Tokens) and `SUPABASE_PROJECT_ID` (the `xxxx` in your Supabase URL). Then open **Actions → Deploy Supabase functions → Run workflow**. After that, every change to `supabase/functions/` deploys automatically. (You still set the `supabase secrets` above once.)
 4. Supabase → **Database → Webhooks → Create**: table `bookings`, event **Insert**, type **Supabase Edge Function** → `notify-booking`, add HTTP header `x-webhook-secret: <your WEBHOOK_SECRET>`.
 5. Settings page in NammaStay → fill **Booking alerts email**.
 
@@ -245,114 +235,3 @@ At 9 beds you'll add roughly 2,000–3,000 bookings a year, so the database itse
 | Supabase | Free while testing; Pro ≈ US$25/month for live guest data |
 | Resend email | Has a free tier; check its current limits against your booking volume |
 | UPI | ₹0 — no gateway fees |
-
-
----
-
-## 16. Subscriptions (manual UPI)
-
-How it works:
-1. An owner signs up at `/signup.html`, creates their property, and gets a **15-day free trial** (Settings → Billing shows days left; a banner appears on every screen).
-2. To pay, they pick Monthly or Yearly in **Settings → Billing**, pay **your** UPI ID by QR, and submit the UTR.
-3. You open **Subscribers** in the app, check the UTR arrived in your bank app, and click **Approve** — their access is extended by the plan period (from the later of today, their trial end, or their current paid-until date, so nobody loses days).
-4. When access ends there are **3 grace days**; after that the database refuses new bookings, new/changed rooms & beds and new staff. Existing guests can still be checked out and paid; all data stays visible.
-
-Set up once (Subscribers → Billing settings): your UPI ID, payee name, support WhatsApp/email, prices, trial days, grace days.
-Your own hostel is marked **complimentary** (never expires). Partners too: Subscribers → Manage → Complimentary.
-
-**Already live?** Run only `supabase/migrations/007_subscriptions.sql`, then turn sign-ups back on (step 4).
-
-
----
-
-## 17. Deleting wrong bookings & booking from the calendar (008)
-
-**Already live?** Run `supabase/migrations/008_delete_booking.sql` in SQL Editor.
-(If you ran `008_formc_badges_expenses.sql` earlier, first run `supabase/setup/undo_formc_badges_expenses.sql`. If you ran the earlier `008_delete_guest.sql`, that's harmless — leave it.)
-
-**Delete booking** — on the booking screen (bottom left), the trash icon on each row of a guest's **stay history**, or tap the guest's bar on the **Calendar** → Delete booking. For a stay entered by mistake, including a guest who is checked in now:
-- Removes only that booking; the bed becomes free. The guest's profile and other stays are untouched.
-- Payments on that booking are deleted with it (the dialog warns you first).
-- Owner/manager: any booking. Front desk: only bookings made in the last 24 hours with no payment.
-- A full copy (booking, guest, payments, reason, who, when) is kept — Settings → Notifications → **Deleted bookings**.
-- To end a real stay early, use **Check out**, not Delete.
-
-**Book from the calendar:** drag across a bed's free nights (on a phone: tap the first night, then the last). A quick form opens with the bed and dates filled in — name, phone (finds returning guests), status, payment. "Open the full form" goes to Check-in with the same bed and dates for ID details.
-
-
-## 18. WhatsApp booking details — poster card or text
-
-After saving a booking (Check-in page or calendar) — or any time from a booking → **WhatsApp details** — NammaStay prepares the confirmation two ways:
-- **🖼 Picture card** — a tall **poster** (story size) with the guest's first name, big check-in / check-out dates and times, bed or room, booking number, guests (hotels/homestays) or nights, balance due or total, and your address and phone.
-  - Phone: **Share card** → WhatsApp → the guest (image + short caption with the online check-in link).
-  - Computer: **Copy image** → paste (Ctrl+V) in the WhatsApp Web chat (**Open chat** opens it), or **Download**.
-- **💬 Text message**: editable text → **Open WhatsApp** (free click-to-chat link).
-WhatsApp's click-to-chat link can only carry text, which is why images go through Share / Copy. Fully automatic sending would need the paid WhatsApp Business API.
-
-## 19. Edit guest profile (009)
-
-**Already live?** Run `supabase/migrations/009_edit_guest.sql`.
-Guest profile → **✎ Edit profile** (owner, manager, front desk): name, phone, email, date of birth, nationality, ID type & number, ID photo (the old photo is deleted when replaced) and notes. Phone numbers get +91 when 10 digits; Aadhaar is kept masked (last 4 digits). Each edit is logged (which fields changed, not the values).
-
-## 20. ID photos — front & back (010)
-
-**Already live?** Run `supabase/migrations/010_id_front_back.sql`.
-Staff (Check-in page, Edit profile) and guests (online check-in link) can upload a **front** and a **back** photo; each shows a preview before saving. **View ID** now opens inside the app with both sides, plus **Open full size** and **Download** (links expire after 5 minutes). Both sides are deleted automatically after the retention period.
-
-## 21. Admin panel (011)
-
-**Already live?** Run `supabase/migrations/011_admin_panel.sql` (needs 007 first). Only platform admins (step 3) see it — menu → **NammaStay admin → Admin panel**.
-- **Overview:** paying / trial / payment due / ended / suspended counts, estimated monthly revenue, sign-ups per week, bookings made across all properties, payments waiting for confirmation.
-- **Needs attention:** trials ending in 3 days, payment due, properties not active for 2+ weeks.
-- **Each property:** owner & contact (WhatsApp / email), usage (beds, bookings, last active), team, subscription payments, private notes.
-- **Actions:** +30 days, +1 year, extend by any days, make free, **suspend / reactivate** (the owner sees your reason; new bookings, rooms, beds and staff are blocked by the database until you reactivate).
-
-## 22. Delete a guest completely (012)
-
-**Already live?** Run `supabase/migrations/012_delete_guest.sql`.
-Guest profile → **Delete guest**, or the 🗑 on a row in the **Guests** list (owner and manager only). Removes the guest's profile, all their bookings (any status), the payments on them and their ID photos. The dialog shows how many bookings and how much money will be removed and asks you to tick "I understand". A copy of each deleted booking is kept in Settings → Notifications → Deleted bookings ("Guest deleted: <reason>").
-To remove only one stay, use the 🗑 on that row in the guest's Stay history instead.
-
-## 23. Adding a property for a customer (013)
-
-**Already live?** Run `supabase/migrations/013_admin_add_property.sql` (needs 007 and 011).
-Two ways a new hostel/hotel gets on NammaStay:
-1. **They sign up themselves** at `/signup.html` → create login → name their property → 15-day trial.
-2. **You add it:** Admin panel → **+ Add property** → property name, type, city, address, owner's name, phone and **email**, free trial (days) or complimentary, optional private note. Tick **Add me as manager** to set up their rooms, beds and rates yourself (switch property by tapping the property name under your name in the menu).
-   - If that email already has a NammaStay login, the property is added to their account straight away (they can switch between properties).
-   - Otherwise NammaStay gives you a ready message with their sign-up link (email pre-filled) to send by **WhatsApp** or **email**. When they create a login with that email, they're linked as **owner** automatically. The property page shows "Waiting for the owner to sign up" until then, with **Send sign-up link** to resend.
-
-## 24. Hotels & homestays (014)
-
-**Already live?** Run `supabase/migrations/014_hotels_homestays.sql` (needs 010).
-The property type (chosen at sign-up, or Settings → Property details → Type) changes how NammaStay works:
-- **Hostel / PG:** sells **beds**; menu says "Rooms & beds"; 1 guest per bed; reports show RevPAB.
-- **Hotel / Homestay:** sells **rooms**; menu says "Rooms"; reports show RevPAR.
-  - **Rooms → + Add room type:** name (e.g. Deluxe Double), description, **how many rooms** and the **first room number** (101 → 101, 102, 103…), rate per night, **max guests**, **guests included** in the rate, **extra adult ₹/night** (children free).
-  - **Bookings** ask for **adults + children**, refuse more guests than the room fits, and add the extra-adult charge: total = nights × (rate + extra).
-  - **Several rooms in one booking** (families, groups): Check-in → **+ Add another room**. One booking per room for the same guest; any payment taken is recorded on the first.
-  - WhatsApp message and ticket show **Room** and **Guests**.
-Hostels can also book several beds at once (**+ Add another bed**) for groups.
-
-## 25. Prices by property type & size (015)
-
-**Already live?** Run `supabase/migrations/015_plans_by_type.sql` (needs 007).
-
-| Type | Size | Monthly | Yearly |
-|---|---|---|---|
-| Homestay | up to 6 rooms | ₹999 | ₹9,990 |
-| Hostel / PG | any size | ₹1,650 | ₹16,500 |
-| Hotel | up to 20 rooms | ₹2,499 | ₹24,990 |
-| Hotel | 21–50 rooms | ₹3,999 | ₹39,990 |
-| Hotel | 51+ rooms | custom quote ("Contact us", no online payment) | — |
-
-Each owner's **Settings → Billing** shows only the plans that fit their property (type + number of active rooms/beds); a homestay above 6 rooms gets hotel prices. The homepage Pricing section has Hostel / Homestay / Hotel tabs and loads the live prices.
-Change prices, labels, room limits or switch a plan off in **Subscribers → Billing settings**. "Rooms" means active beds for hostels.
-
-## 26. Sign-in safety (frontend only — no SQL)
-
-- **Demo never switches on by itself.** With Supabase keys in `config.js`, sign-in always needs a real account. Keys missing → "Not connected yet" and nobody can sign in. The sample-data demo opens only via `login.html?demo=1` (homepage "Try the live demo"); it runs in the visitor's browser, never touches real data, and has **Exit demo**.
-- **No silent skip:** if someone is already signed in on a device, the sign-in page asks "You're signed in as … — Continue / Not you? Sign out".
-- **Keep me signed in:** unticked → signed out when the browser is closed (use this on shared front-desk computers).
-- **Sign out on all devices:** Settings → Users & roles (or My account).
-- **Settings → My account:** change your password (needs the current one), change your email (confirmed by a link to the new address).
