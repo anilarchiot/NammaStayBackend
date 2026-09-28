@@ -1,0 +1,13 @@
+# Supabase CLI settings for NammaStay.
+# The server functions check their own secret header (not a staff login),
+# so JWT verification is turned off for them.
+project_id = "nammastay"
+
+[functions.notify-booking]
+verify_jwt = false
+
+[functions.notify-lead]
+verify_jwt = false
+
+[functions.purge-id-docs]
+verify_jwt = false
