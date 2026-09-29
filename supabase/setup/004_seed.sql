@@ -44,5 +44,10 @@ begin
     (v_prop, v_dorm3, 'Lower C2', 'lower', 85000, 2),
     (v_prop, v_dorm3, 'Lower C3', 'lower', 85000, 3);
 
+  -- Your own hostel never needs a subscription (only if 007_subscriptions.sql has been run)
+  if to_regclass('public.subscriptions') is not null then
+    execute 'update public.subscriptions set is_complimentary = true where property_id = $1' using v_prop;
+  end if;
+
   raise notice 'Property created: %  (9 beds). Owner: %', v_prop, v_owner_email;
 end $$;
