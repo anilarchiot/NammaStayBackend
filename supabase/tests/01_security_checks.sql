@@ -9,7 +9,7 @@ select c.relname as table_without_rls
   from pg_class c join pg_namespace n on n.oid = c.relnamespace
  where n.nspname = 'public' and c.relkind = 'r' and not c.relrowsecurity;
 
--- 2. Anonymous visitors have no direct table access             → expect 0 rows
+-- 2. Anonymous visitors have no direct table access             → expect only: plans / SELECT (public prices)
 select table_name, privilege_type
   from information_schema.role_table_grants
  where grantee = 'anon' and table_schema = 'public';
@@ -21,8 +21,8 @@ select table_name, privilege_type
    and table_name in ('bookings','payments','audit_log','property_members','leads','platform_admins')
    and privilege_type in ('INSERT','UPDATE','DELETE');
 
--- 4. Functions anonymous visitors can call                      → expect exactly 4:
---    checkin_upload_allowed, selfcheckin_get, selfcheckin_submit, submit_lead (after 006)
+-- 4. Functions anonymous visitors can call                      → expect exactly these 4:
+--    checkin_upload_allowed, selfcheckin_get, selfcheckin_submit, submit_lead (006)
 select p.proname
   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
  where n.nspname = 'public' and has_function_privilege('anon', p.oid, 'EXECUTE')
