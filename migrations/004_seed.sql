@@ -10,7 +10,7 @@
 -- =====================================================================
 do $$
 declare
-  v_owner_email text := 'owner@example.com';   -- ← CHANGE THIS
+  v_owner_email text := 'thenammastay@gmail.com';   -- ← CHANGE THIS
   v_user uuid;
   v_prop uuid;
   v_dorm6 uuid;
