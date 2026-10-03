@@ -400,3 +400,14 @@ Menu → **Check-in** now opens on a list instead of the form:
 **Languages** — Tamil, Kannada, Telugu, Malayalam: switch at the bottom of the menu, on the sign-in page and on the guest check-in page. Menus, buttons, labels and headings are translated; longer messages stay in English for now (have a native speaker review the wording).
 
 **Regular-guest offers** — Settings → **Regular-guest offers** → On; e.g. from stay no. 2 get 5% off, from stay no. 5 get 10%. Applied automatically when staff book a returning guest (room charge only, max 50%); shown on the booking and the invoice. Owner/manager: **Change** (0 removes) or **Discount** on any booking.
+
+## 32. Existing guests fill in automatically (frontend only — no SQL)
+
+Check-in → **+ New registration**: start typing the guest's **name (3+ letters)** or **phone (6+ digits)** → a list of matching past guests appears (face, phone, nationality, last stay) → tap one → name, phone, email, date of birth, nationality and ID fill in, and the booking goes on their **existing profile** (no duplicate guest). A green banner shows how many stays they've had and whether a regular-guest offer applies; **Not them? Clear** starts fresh; **Edit profile** opens their profile. If they have no ID photo yet, add one here and it's saved to their profile. The calendar's quick-booking form also finds guests by name or phone.
+
+## 33. Move a booking on the calendar (frontend only — no SQL)
+
+- **Computer:** drag a guest's bar to other dates and/or another bed/room. Target nights glow green (free) or red (booked/blocked); drop → **Move booking?** shows From → To → confirm.
+- **Phone:** tap the bar → **Move…** → tap the new first night on any bed/room → confirm.
+- Same number of nights and the same check-in/check-out times; moving to another bed/room uses that bed's rate.
+- Checked-in guests can only change bed/room (same dates); checked-out stays can't be moved. The database re-checks everything (double bookings, maintenance, capacity, already-paid amounts).
