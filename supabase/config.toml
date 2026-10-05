@@ -11,3 +11,15 @@ verify_jwt = false
 
 [functions.purge-id-docs]
 verify_jwt = false
+
+[functions.ical]
+verify_jwt = false
+
+[functions.ota-sync]
+verify_jwt = false
+
+[functions.razorpay]
+verify_jwt = false
+
+[functions.billing-reminders]
+verify_jwt = false

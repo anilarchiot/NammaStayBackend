@@ -6,8 +6,8 @@
 // Secrets:  RESEND_API_KEY, MAIL_FROM, WEBHOOK_SECRET, SITE_URL, LEADS_NOTIFY_EMAIL
 // Deploy:   supabase functions deploy notify-lead --no-verify-jwt
 const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY") ?? "";
-const MAIL_FROM = Deno.env.get("MAIL_FROM") ?? "NammaStay <hello@thenammastay.in>";
-const SITE_URL = (Deno.env.get("SITE_URL") ?? "https://thenammastay.in").replace(/\/$/, "");
+const MAIL_FROM = Deno.env.get("MAIL_FROM") ?? "NammaStay <hello@thenammastay.com>";
+const SITE_URL = (Deno.env.get("SITE_URL") ?? "https://thenammastay.com").replace(/\/$/, "");
 const SECRET = Deno.env.get("WEBHOOK_SECRET") ?? "";
 const NOTIFY = Deno.env.get("LEADS_NOTIFY_EMAIL") ?? "";
 

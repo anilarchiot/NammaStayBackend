@@ -27,7 +27,7 @@ This guide lives in the **backend repo**. The website is in the separate **front
 | `login.html` + other `*.html`, `assets/` | The app. Works as a demo until `assets/js/config.js` is filled in. |
 | `assets/js/core.js` | Login check, roles, formatting, dialogs, notification bell. |
 | `assets/js/pages/*.js` | One script per screen; each calls the database functions. |
-| `supabase/migrations/001–003, 006–018` | The database structure: run in order (or `SETUP_ALL.sql`). |
+| `supabase/migrations/001–003, 006–023` | The database structure: run in order (or `SETUP_ALL.sql`). |
 | `supabase/setup/004_seed.sql`, `005_schedule.sql` | One-time setup you edit before running. |
 | `supabase/tests/01_security_checks.sql` | Security checks — run before launch and after every change. |
 | `supabase/tests/02_load_test.sql` | 1.5 lakh-booking load test — **separate test project only**. |
@@ -65,6 +65,11 @@ Supabase → **SQL Editor** → New query. Paste and **Run** each file, in order
 14. `supabase/migrations/016_extras.sql` — extras on the bill (food, laundry, rentals…)
 15. `supabase/migrations/017_role_permissions.sql` — what each role can do
 16. `supabase/migrations/018_invoice_offers.sql` — GST invoices & receipts, regular-guest offers
+17. `supabase/migrations/019_prices_oct_2026.sql` — new subscription prices
+18. `supabase/migrations/020_ota_sync.sql` — OTA calendar sync (iCal)
+19. `supabase/migrations/021_expenses_paylinks.sql` — expenses & profit, Razorpay payment links
+20. `supabase/migrations/022_admin_2fa.sql` — 2-step login for the admin website
+21. `supabase/migrations/023_platform_invoices_reminders.sql` — GST invoices for subscriptions + billing reminders
 
 Shortcut: `supabase/SETUP_ALL.sql` contains all sixteen in one file — paste it once and Run.
 
@@ -411,3 +416,75 @@ Check-in → **+ New registration**: start typing the guest's **name (3+ letters
 - **Phone:** tap the bar → **Move…** → tap the new first night on any bed/room → confirm.
 - Same number of nights and the same check-in/check-out times; moving to another bed/room uses that bed's rate.
 - Checked-in guests can only change bed/room (same dates); checked-out stays can't be moved. The database re-checks everything (double bookings, maintenance, capacity, already-paid amounts).
+
+## 34. Subscription prices — October 2026 (019)
+
+**Already live?** Run `supabase/migrations/019_prices_oct_2026.sql`.
+
+| Type | Size | Monthly | Yearly |
+|---|---|---|---|
+| Hostel / PG | any | ₹3,999 | ₹27,999 (save ₹19,989) |
+| Homestay | ≤ 6 rooms | ₹1,999 | ₹12,999 (save ₹10,989) |
+| Hotel | ≤ 20 rooms | ₹3,999 | ₹27,999 (save ₹19,989) |
+| Hotel | 21–50 rooms | ₹6,999 | ₹45,999 (save ₹37,989) |
+| Hotel | 51+ | custom quote | — |
+
+Existing paid-until dates stay; the new price applies at the next payment. Change any price later in Subscribers → Billing settings.
+
+## 35. OTA calendar sync — Airbnb, Booking.com, Agoda, Vrbo (020)
+
+**1. Database** — SQL Editor → run `supabase/migrations/020_ota_sync.sql`.
+
+**2. Server functions** — two new functions: `ical` (serves each bed/room's calendar link) and `ota-sync` (imports OTA calendars).
+- If you set up the GitHub Action (Secrets `SUPABASE_ACCESS_TOKEN` + `SUPABASE_PROJECT_ID`), pushing the backend repo deploys them.
+- Otherwise, on a computer with the Supabase CLI: `supabase functions deploy ical --no-verify-jwt` and `supabase functions deploy ota-sync --no-verify-jwt`.
+- Make sure the secret exists: `supabase secrets set CRON_SECRET=<a long random text>` (the same one used for the ID-photo clean-up).
+
+**3. Every 30 minutes** — Database → Extensions → enable **pg_cron** and **pg_net**; then edit `supabase/setup/ota_schedule.sql` (project ref + CRON_SECRET) and run it.
+
+**4. Connect your OTAs** — app → **OTA sync** (owner/manager):
+- **Export:** for each bed/room, pick the OTA, **Copy** the NammaStay link, paste it into the OTA's "import / connect calendar".
+- **Import:** copy the OTA's own calendar (export / iCal) link, choose the OTA, paste it next to that bed/room → **Add**. **Sync now** pulls it at once.
+- OTA bookings show on the calendar as coloured 🔗 bars ("🔗 Airbnb") and can't be double-booked; change or cancel them on the OTA. Clashes with a NammaStay booking send a notification.
+- If a link was shared by mistake, **Make a new link** and update it on the OTAs.
+
+**Limits (iCal):** dates only (no prices or guest details); OTAs refresh imported calendars on their own schedule (often every few hours), so near-simultaneous bookings can still clash. Hostelworld, MakeMyTrip/Goibibo and Booking.com hotel/hostel listings generally need a certified channel manager (two-way API) rather than iCal.
+
+## 36. Expenses & profit + online payment links (021)
+
+**Database:** run `supabase/migrations/021_expenses_paylinks.sql`.
+
+**Expenses & profit** (menu → Expenses & profit; owner, manager, accountant with "See reports & revenue"): add rent, salaries, bills, supplies, OTA commission… See money received − expenses = profit, margin, last 6 months and where the money went. Export CSV.
+
+**Online payment links (Razorpay)** — money goes to each property's own Razorpay account:
+1. Deploy the function: GitHub Action (pushing the backend repo), or `supabase functions deploy razorpay --no-verify-jwt`.
+2. Owner → Settings → Property details → **Online payments (Razorpay)**: paste **Key ID** + **Key Secret** (Razorpay → Account & Settings → API Keys) and a **Webhook secret** you choose → Save → **Test connection**. Keys are stored write-only (nobody can read them back from the app).
+3. Razorpay → Webhooks → Add: URL shown in that card (`…/functions/v1/razorpay?p=<property id>`), the same webhook secret, events **payment_link.paid**, **payment_link.expired**, **payment_link.cancelled**.
+4. Booking → **💳 Payment link** → amount → Create → Copy / **Send on WhatsApp**. When the guest pays, the payment is recorded automatically ("Paid online — Razorpay payment link"); without a webhook, NammaStay checks whenever the booking is opened.
+Start with test keys (rzp_test_…) and Razorpay's test payment methods, then switch to live keys.
+
+## 37. Admin website — admin.thenammastay.com (022)
+
+The admin screens (Overview, Subscribers, Leads) are now a **separate website** in their own GitHub repo
+(`nammastay-admin-site.zip`). The hostel app no longer contains them; its old links (`/admin.html`,
+`/subscribers.html`, `/leads.html`, `/admin-login.html`) redirect to the admin website.
+
+Admins sign in with **password + a 6-digit code** from an authenticator app (set up on first sign-in by
+scanning a QR code). After setup, the database refuses every admin action unless that sign-in used the code.
+
+Setup: run `022_admin_2fa.sql`; Supabase → Authentication → MFA → TOTP on; add
+`https://admin.thenammastay.com/**` to Redirect URLs; new GitHub repo + Pages; GoDaddy CNAME `admin` →
+`anilarchiot.github.io`; Enforce HTTPS. Step-by-step: README.md in the admin site.
+Lost phone: `delete from auth.mfa_factors where user_id = (select id from auth.users where lower(email) = lower('admin@…'));`
+
+## 38. Subscription GST invoices + billing reminders (023)
+
+**Database:** run `supabase/migrations/023_platform_invoices_reminders.sql`.
+
+**Invoices (NammaStay → property)** — admin website → Subscribers → **Invoice settings**: legal name, your GSTIN (optional), address, state, SAC, GST %, prefix → Save → **Create invoices for past payments** (once). From then on every approved subscription payment gets an invoice automatically (NS/2026-27/0001…). Prices include GST; customer in your state → CGST + SGST, other state → IGST (by their GSTIN or chosen state). Owners: Settings → Billing → **Billing details** (name, GSTIN, address, state) and **Your invoices** (view / PDF / share). Admin: each property's payments show their invoice. Confirm SAC/rate with your CA.
+
+**Reminders** — trial ending in 3 days / 1 day / ended, renewal in 7 days / 1 day / ended:
+- In-app notification to the owner (always), email (if Resend is set up), and a **Reminders to follow up** card on the admin Overview with one-tap **WhatsApp** + **Done**.
+- Daily schedule: edit and run `supabase/setup/reminders_schedule.sql` — option A (in-app + email, needs the `billing-reminders` function: GitHub Action or `supabase functions deploy billing-reminders --no-verify-jwt`; secrets CRON_SECRET, RESEND_API_KEY, MAIL_FROM, SITE_URL) or option B (in-app only, pure SQL). **Check now** on the admin Overview runs it at any time.
+
+**Guest app removed.** If you ran `024_guest_app.sql` earlier, run `supabase/setup/undo_guest_app.sql` once.
