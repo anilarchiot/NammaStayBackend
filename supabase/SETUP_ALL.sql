@@ -1,8 +1,8 @@
 -- =====================================================================
 -- NammaStay · SETUP_ALL.sql — the complete backend in one file
--- = 001 + 002 + 003 + 006 + 007 + 008 … 017 + 018_invoice_offers
+-- = 001 + 002 + 003 + 006 + 007 + 008 … 022 + 023_platform_invoices_reminders
 -- Run once on a NEW Supabase project (SQL Editor → paste → Run).
--- Then run setup/004_seed.sql (your hostel + owner) and, optionally, setup/005_schedule.sql.
+-- Then run 004_seed.sql (your hostel + owner) and the optional schedules (005, ota, reminders).
 -- ALREADY LIVE? Don't re-run this — run only the newest migration(s) you haven't run yet.
 -- =====================================================================
 
@@ -3885,3 +3885,864 @@ end $$;
 revoke execute on function public._offer_pct(uuid, uuid), public.set_booking_discount(uuid, numeric), public._room_gst(text, numeric, int),
   public.issue_invoice(uuid, jsonb) from public, anon, authenticated;
 grant execute on function public.set_booking_discount(uuid, numeric), public.issue_invoice(uuid, jsonb) to authenticated;
+
+
+-- >>>>>>>>>>>>>>>>>>>> 019_prices_oct_2026.sql
+-- =====================================================================
+-- NammaStay · 019_prices_oct_2026.sql
+-- New subscription prices (flat price per property, 15-day free trial):
+--   Hostel / PG           ₹3,999 / month   ₹27,999 / year
+--   Homestay (≤ 6 rooms)  ₹1,999 / month   ₹12,999 / year
+--   Hotel small (≤ 20)    ₹3,999 / month   ₹27,999 / year
+--   Hotel mid (21–50)     ₹6,999 / month   ₹45,999 / year
+--   Hotel large (51+)     custom quote (unchanged)
+-- Existing paid-until dates are not changed; new prices apply to the
+-- next payment. Change prices later in the app: Subscribers → Billing settings.
+-- Run AFTER 015_plans_by_type.sql.
+-- =====================================================================
+update public.plans set price_paise = 399900,  description = 'Billed every month'                 where id = 'monthly';
+update public.plans set price_paise = 2799900, description = 'Save ₹19,989 a year'                where id = 'yearly';
+update public.plans set price_paise = 199900,  description = 'Homestays up to 6 rooms'            where id = 'homestay_monthly';
+update public.plans set price_paise = 1299900, description = 'Homestays · save ₹10,989 a year'    where id = 'homestay_yearly';
+update public.plans set price_paise = 399900,  description = 'Hotels up to 20 rooms'              where id = 'hotel_s_monthly';
+update public.plans set price_paise = 2799900, description = 'Up to 20 rooms · save ₹19,989 a year' where id = 'hotel_s_yearly';
+update public.plans set price_paise = 699900,  description = 'Hotels with 21–50 rooms'            where id = 'hotel_m_monthly';
+update public.plans set price_paise = 4599900, description = '21–50 rooms · save ₹37,989 a year'  where id = 'hotel_m_yearly';
+
+-- check
+select id, kind, name, price_paise / 100 as price_rupees, description from public.plans order by sort;
+
+
+-- >>>>>>>>>>>>>>>>>>>> 020_ota_sync.sql
+-- =====================================================================
+-- NammaStay · 020_ota_sync.sql
+-- OTA calendar sync (iCal) — Airbnb, Booking.com, Agoda, Vrbo, Google…
+--   EXPORT: every bed/room has a secret calendar link (beds.ical_token).
+--           OTAs import it, so nights booked or blocked in NammaStay are
+--           closed there too. Served by the `ical` edge function.
+--   IMPORT: each bed/room can have OTA calendar links (ota_feeds). The
+--           `ota-sync` edge function fetches them (every 30 min + "Sync
+--           now") and calls ota_apply(), which turns OTA reservations into
+--           calendar blocks ("🔗 Airbnb · reserved") so staff can't
+--           double-book them. Clashes with NammaStay bookings → alert.
+-- iCal shares availability only — not prices, guest names or payments.
+-- Run AFTER 019_prices_oct_2026.sql. Then deploy the two edge functions
+-- and run setup/ota_schedule.sql (see docs/GO-LIVE.md §35).
+-- =====================================================================
+
+alter table public.beds add column if not exists ical_token uuid not null default gen_random_uuid();
+create unique index if not exists beds_ical_token on public.beds (ical_token);
+
+create table if not exists public.ota_feeds (
+  id             uuid primary key default gen_random_uuid(),
+  property_id    uuid not null,
+  bed_id         uuid not null,
+  channel        text not null check (channel in ('airbnb','booking','agoda','vrbo','google','other')),
+  import_url     text not null check (import_url ~ '^https://' and char_length(import_url) <= 1000),
+  label          text check (char_length(label) <= 60),
+  last_synced_at timestamptz,
+  last_status    text check (last_status in ('ok','error')),
+  last_error     text check (char_length(last_error) <= 300),
+  events_count   int not null default 0,
+  created_at     timestamptz not null default now(),
+  foreign key (bed_id, property_id) references public.beds(id, property_id) on delete cascade,
+  unique (bed_id, import_url)
+);
+create index if not exists ota_feeds_prop on public.ota_feeds (property_id);
+
+alter table public.bed_blocks
+  add column if not exists feed_id uuid references public.ota_feeds(id) on delete cascade,
+  add column if not exists external_uid text check (char_length(external_uid) <= 300);
+create unique index if not exists bed_blocks_feed_uid on public.bed_blocks (feed_id, external_uid) where feed_id is not null;
+
+alter table public.ota_feeds enable row level security;
+create policy ota_feeds_select on public.ota_feeds for select to authenticated
+  using (property_id in (select public.my_property_ids(array['owner','manager']::public.member_role[])));
+revoke all on public.ota_feeds from anon, authenticated;
+grant select on public.ota_feeds to authenticated;
+
+-- ---------------------------------------------------------------- staff (owner / manager with "rooms & prices")
+create or replace function public.ota_overview(p_property uuid) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+begin
+  perform public._assert_role(p_property, array['owner','manager']::public.member_role[]);
+  return (select coalesce(jsonb_agg(jsonb_build_object(
+      'bed_id', bd.id, 'label', bd.label, 'room', r.name, 'is_active', bd.is_active, 'token', bd.ical_token,
+      'feeds', (select coalesce(jsonb_agg(jsonb_build_object('id', f.id, 'channel', f.channel, 'label', f.label, 'import_url', f.import_url,
+                  'last_synced_at', f.last_synced_at, 'last_status', f.last_status, 'last_error', f.last_error, 'events_count', f.events_count)
+                  order by f.created_at), '[]'::jsonb) from public.ota_feeds f where f.bed_id = bd.id))
+      order by r.sort, r.name, bd.sort, bd.label), '[]'::jsonb)
+    from public.beds bd join public.rooms r on r.id = bd.room_id where bd.property_id = p_property);
+end $$;
+
+create or replace function public.ota_feed_save(p_property uuid, p jsonb) returns uuid
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_id uuid; v_url text := btrim(coalesce(p->>'import_url', ''));
+begin
+  perform public._assert_role(p_property, array['owner','manager']::public.member_role[]);
+  perform public._require_perm(p_property, 'manage_rooms');
+  if v_url !~ '^https://' then raise exception 'Paste the full calendar link — it starts with https://'; end if;
+  if v_url ~* 'thenammastay|/functions/v1/ical' then raise exception 'That’s a NammaStay link — paste the link from the OTA instead.'; end if;
+  if not exists (select 1 from public.beds where id = (p->>'bed_id')::uuid and property_id = p_property) then raise exception 'Choose a bed or room.'; end if;
+  if nullif(p->>'id', '') is null then
+    insert into public.ota_feeds (property_id, bed_id, channel, import_url, label)
+    values (p_property, (p->>'bed_id')::uuid, coalesce(nullif(p->>'channel', ''), 'other'), v_url, nullif(left(btrim(coalesce(p->>'label', '')), 60), ''))
+    returning id into v_id;
+  else
+    update public.ota_feeds set channel = coalesce(nullif(p->>'channel', ''), channel), import_url = v_url,
+           label = nullif(left(btrim(coalesce(p->>'label', '')), 60), '')
+     where id = (p->>'id')::uuid and property_id = p_property returning id into v_id;
+    if v_id is null then raise exception 'Calendar link not found.'; end if;
+  end if;
+  return v_id;
+exception when unique_violation then raise exception 'That calendar link is already added for this bed/room.';
+end $$;
+
+create or replace function public.ota_feed_delete(p_feed uuid) returns void
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_prop uuid;
+begin
+  select property_id into v_prop from public.ota_feeds where id = p_feed;
+  if v_prop is null then raise exception 'Calendar link not found.'; end if;
+  perform public._assert_role(v_prop, array['owner','manager']::public.member_role[]);
+  perform public._require_perm(v_prop, 'manage_rooms');
+  delete from public.ota_feeds where id = p_feed;                 -- its imported blocks go too
+end $$;
+
+-- New secret link for one bed/room (if the old one was shared by mistake)
+create or replace function public.ota_new_token(p_bed uuid) returns uuid
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_prop uuid; v_tok uuid := gen_random_uuid();
+begin
+  select property_id into v_prop from public.beds where id = p_bed;
+  if v_prop is null then raise exception 'Bed not found.'; end if;
+  perform public._assert_role(v_prop, array['owner','manager']::public.member_role[]);
+  update public.beds set ical_token = v_tok where id = p_bed;
+  return v_tok;
+end $$;
+
+-- Feeds the `ota-sync` function may refresh for this person (checks their role)
+create or replace function public.ota_feeds_for_sync(p_property uuid) returns setof uuid
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+begin
+  perform public._assert_role(p_property, array['owner','manager','front_desk']::public.member_role[]);
+  return query select id from public.ota_feeds where property_id = p_property;
+end $$;
+
+-- ---------------------------------------------------------------- server only (edge functions, service role)
+-- Calendar export for one bed/room. p_exclude: skip blocks imported from this channel (avoids echoing an OTA's own bookings back).
+create or replace function public.ota_export(p_token uuid, p_exclude text default null) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare bd public.beds%rowtype; p public.properties%rowtype;
+begin
+  select * into bd from public.beds where ical_token = p_token;
+  if not found then return null; end if;
+  select * into p from public.properties where id = bd.property_id;
+  return jsonb_build_object(
+    'name', p.name || ' · ' || bd.label, 'tz', p.timezone,
+    'events', (select coalesce(jsonb_agg(e), '[]'::jsonb) from (
+       select jsonb_build_object('uid', 'ns-b-' || b.id, 'start', (b.check_in_at at time zone p.timezone)::date,
+                                 'end', greatest((b.check_out_at at time zone p.timezone)::date, (b.check_in_at at time zone p.timezone)::date + 1),
+                                 'summary', 'Reserved') e
+         from public.bookings b
+        where b.bed_id = bd.id and b.status in ('pending','confirmed','checked_in') and b.check_out_at > now() - interval '1 day'
+       union all
+       select jsonb_build_object('uid', 'ns-k-' || k.id, 'start', (k.starts_at at time zone p.timezone)::date,
+                                 'end', greatest((k.ends_at at time zone p.timezone)::date, (k.starts_at at time zone p.timezone)::date + 1),
+                                 'summary', 'Not available') e
+         from public.bed_blocks k left join public.ota_feeds f on f.id = k.feed_id
+        where k.bed_id = bd.id and k.ends_at > now() - interval '1 day'
+          and (p_exclude is null or f.channel is distinct from p_exclude)) x));
+end $$;
+
+create or replace function public.ota_due_feeds(p_limit int default 300) returns setof public.ota_feeds
+language sql stable security definer set search_path = public, pg_temp as $$
+  select f.* from public.ota_feeds f join public.beds b on b.id = f.bed_id
+   where b.is_active and public._access_state(f.property_id) not in ('expired','suspended')
+   order by f.last_synced_at nulls first limit least(greatest(coalesce(p_limit, 300), 1), 1000)
+$$;
+
+-- p_events: [{ "uid": "...", "start": "YYYY-MM-DD", "end": "YYYY-MM-DD" }]  (end = check-out day)
+-- or p_error: why fetching/parsing failed.
+create or replace function public.ota_apply(p_feed uuid, p_events jsonb, p_error text default null) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  f public.ota_feeds%rowtype; p public.properties%rowtype; bd public.beds%rowtype; e jsonb;
+  v_start timestamptz; v_end timestamptz; v_uids text[] := '{}'; v_added int := 0; v_updated int := 0; v_removed int := 0; v_clash int := 0;
+  v_name text; v_ex public.bed_blocks%rowtype; v_has boolean;
+begin
+  select * into f from public.ota_feeds where id = p_feed for update;
+  if not found then return jsonb_build_object('error', 'feed not found'); end if;
+  select * into p from public.properties where id = f.property_id;
+  select * into bd from public.beds where id = f.bed_id;
+  v_name := case f.channel when 'airbnb' then 'Airbnb' when 'booking' then 'Booking.com' when 'agoda' then 'Agoda'
+            when 'vrbo' then 'Vrbo' when 'google' then 'Google Calendar' else coalesce(f.label, 'OTA') end;
+
+  if p_error is not null then
+    update public.ota_feeds set last_synced_at = now(), last_status = 'error', last_error = left(p_error, 300) where id = f.id;
+    return jsonb_build_object('error', p_error);
+  end if;
+
+  for e in select * from jsonb_array_elements(coalesce(p_events, '[]'::jsonb)) loop
+    continue when nullif(e->>'uid', '') is null or nullif(e->>'start', '') is null or nullif(e->>'end', '') is null;
+    continue when (e->>'end')::date <= public._local_date(p.id, now()) or (e->>'end')::date <= (e->>'start')::date;
+    v_start := ((e->>'start')::date::timestamp + p.checkin_time) at time zone p.timezone;
+    v_end   := ((e->>'end')::date::timestamp + p.checkout_time) at time zone p.timezone;
+    if v_end <= v_start then v_end := ((e->>'end')::date::timestamp + interval '12 hours') at time zone p.timezone; end if;
+    v_uids := v_uids || left(e->>'uid', 300);
+
+    select * into v_ex from public.bed_blocks where feed_id = f.id and external_uid = left(e->>'uid', 300);
+    v_has := found;
+    if v_has and v_ex.starts_at = v_start and v_ex.ends_at = v_end then continue; end if;
+
+    -- clash with a NammaStay booking on the same bed/room → don't block, alert the staff once
+    if exists (select 1 from public.bookings b where b.bed_id = bd.id and b.status in ('pending','confirmed','checked_in')
+                and b.stay && tstzrange(v_start, v_end, '[)')) then
+      v_clash := v_clash + 1;
+      if not exists (select 1 from public.notifications n where n.property_id = p.id and n.kind = 'ota_clash'
+                       and n.body like '%' || left(e->>'uid', 60) || '%' and n.created_at > now() - interval '7 days') then
+        insert into public.notifications (property_id, kind, title, body)
+        values (p.id, 'ota_clash', format('Double booking? %s · %s', v_name, bd.label),
+                format('%s has a booking %s → %s, but %s is already booked in NammaStay. Move one of them. [%s]',
+                       v_name, to_char((e->>'start')::date, 'DD Mon'), to_char((e->>'end')::date, 'DD Mon'), bd.label, left(e->>'uid', 60)));
+      end if;
+      if v_has then delete from public.bed_blocks where id = v_ex.id; end if;
+      continue;
+    end if;
+
+    begin
+      if v_has then
+        update public.bed_blocks set starts_at = v_start, ends_at = v_end where id = v_ex.id; v_updated := v_updated + 1;
+      else
+        insert into public.bed_blocks (property_id, bed_id, starts_at, ends_at, reason, feed_id, external_uid, created_by)
+        values (p.id, bd.id, v_start, v_end, '🔗 ' || v_name || ' · reserved', f.id, left(e->>'uid', 300), null);
+        v_added := v_added + 1;
+      end if;
+    exception when exclusion_violation then null;                 -- already blocked (maintenance or another OTA): nothing to do
+    end;
+  end loop;
+
+  delete from public.bed_blocks k where k.feed_id = f.id and not (k.external_uid = any (v_uids));
+  get diagnostics v_removed = row_count;
+  update public.ota_feeds set last_synced_at = now(), last_status = 'ok', last_error = null,
+         events_count = (select count(*) from public.bed_blocks where feed_id = f.id) where id = f.id;
+  return jsonb_build_object('added', v_added, 'updated', v_updated, 'removed', v_removed, 'clashes', v_clash);
+end $$;
+
+-- ---------------------------------------------------------------- permissions
+revoke execute on function public.ota_overview(uuid), public.ota_feed_save(uuid, jsonb), public.ota_feed_delete(uuid),
+  public.ota_new_token(uuid), public.ota_feeds_for_sync(uuid), public.ota_export(uuid, text), public.ota_due_feeds(int),
+  public.ota_apply(uuid, jsonb, text) from public, anon, authenticated;
+grant execute on function public.ota_overview(uuid), public.ota_feed_save(uuid, jsonb), public.ota_feed_delete(uuid),
+  public.ota_new_token(uuid), public.ota_feeds_for_sync(uuid) to authenticated;
+grant execute on function public.ota_export(uuid, text), public.ota_due_feeds(int), public.ota_apply(uuid, jsonb, text) to service_role;
+
+
+-- >>>>>>>>>>>>>>>>>>>> 021_expenses_paylinks.sql
+-- =====================================================================
+-- NammaStay · 021_expenses_paylinks.sql
+--   1. Expenses & profit — record spending; profit = money received
+--      (payments − refunds) − expenses, per period and per month.
+--      Needs the "See reports & revenue" permission (017).
+--   2. Online payment links (Razorpay) — each property connects its own
+--      Razorpay account (keys stored write-only, never readable from the
+--      app). Staff create a link for a booking's balance; when the guest
+--      pays, the `razorpay` edge function records the payment
+--      automatically (webhook, or "check status" when the booking opens).
+-- Run AFTER 020_ota_sync.sql. Then deploy the `razorpay` edge function
+-- (docs/GO-LIVE.md §36).
+-- =====================================================================
+
+-- =====================================================================
+-- 1. Expenses & profit
+-- =====================================================================
+create table if not exists public.expenses (
+  id           uuid primary key default gen_random_uuid(),
+  property_id  uuid not null references public.properties(id) on delete cascade,
+  spent_on     date not null default current_date,
+  category     text not null default 'other' check (category in ('rent','salaries','electricity','water','internet','supplies','laundry',
+                 'repairs','ota_commission','marketing','food','taxes','other')),
+  amount_paise int  not null check (amount_paise between 1 and 100000000),
+  method       text not null default 'cash' check (method in ('cash','upi','card','bank')),
+  vendor       text check (char_length(vendor) <= 80),
+  note         text check (char_length(note) <= 300),
+  created_by   uuid default auth.uid(),
+  created_at   timestamptz not null default now()
+);
+create index if not exists expenses_prop_day on public.expenses (property_id, spent_on desc);
+alter table public.expenses enable row level security;
+drop policy if exists expenses_select on public.expenses;
+create policy expenses_select on public.expenses for select to authenticated
+  using (property_id in (select public.my_property_ids(array['owner','manager','accountant']::public.member_role[]))
+         and public._allowed(property_id, 'view_reports'));
+revoke all on public.expenses from anon, authenticated;
+grant select on public.expenses to authenticated;
+
+-- p: { id?, spent_on, category, amount_paise, method, vendor, note }
+create or replace function public.save_expense(p_property uuid, p jsonb) returns uuid
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_id uuid; v_amt int := nullif(p->>'amount_paise', '')::int; v_day date := coalesce(nullif(p->>'spent_on', '')::date, public._local_date(p_property, now()));
+begin
+  perform public._assert_role(p_property, array['owner','manager','accountant']::public.member_role[]);
+  perform public._require_perm(p_property, 'view_reports');
+  if v_amt is null or v_amt < 1 then raise exception 'Enter the amount.'; end if;
+  if v_day > public._local_date(p_property, now()) + 31 then raise exception 'That date is too far in the future.'; end if;
+  if nullif(p->>'id', '') is null then
+    insert into public.expenses (property_id, spent_on, category, amount_paise, method, vendor, note)
+    values (p_property, v_day, coalesce(nullif(p->>'category', ''), 'other'), v_amt, coalesce(nullif(p->>'method', ''), 'cash'),
+            nullif(left(btrim(coalesce(p->>'vendor', '')), 80), ''), nullif(left(btrim(coalesce(p->>'note', '')), 300), ''))
+    returning id into v_id;
+  else
+    update public.expenses set spent_on = v_day, category = coalesce(nullif(p->>'category', ''), category), amount_paise = v_amt,
+           method = coalesce(nullif(p->>'method', ''), method), vendor = nullif(left(btrim(coalesce(p->>'vendor', '')), 80), ''),
+           note = nullif(left(btrim(coalesce(p->>'note', '')), 300), '')
+     where id = (p->>'id')::uuid and property_id = p_property returning id into v_id;
+    if v_id is null then raise exception 'Expense not found.'; end if;
+  end if;
+  return v_id;
+end $$;
+
+create or replace function public.delete_expense(p_id uuid) returns void
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_prop uuid;
+begin
+  select property_id into v_prop from public.expenses where id = p_id;
+  if v_prop is null then raise exception 'Expense not found.'; end if;
+  perform public._assert_role(v_prop, array['owner','manager','accountant']::public.member_role[]);
+  perform public._require_perm(v_prop, 'view_reports');
+  delete from public.expenses where id = p_id;
+end $$;
+
+-- Revenue = money received (payments − refunds) by date received; expenses by date spent.
+create or replace function public.profit_summary(p_property uuid, p_from date, p_to date) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare v_tz text; v_rev bigint; v_exp bigint; v_m0 date;
+begin
+  perform public._assert_role(p_property, array['owner','manager','accountant']::public.member_role[]);
+  perform public._require_perm(p_property, 'view_reports');
+  if p_from is null or p_to is null or p_to < p_from then raise exception 'Choose a valid period.'; end if;
+  select timezone into v_tz from public.properties where id = p_property;
+  select coalesce(sum(case when kind = 'refund' then -amount_paise else amount_paise end), 0) into v_rev
+    from public.payments where property_id = p_property and (received_at at time zone v_tz)::date between p_from and p_to;
+  select coalesce(sum(amount_paise), 0) into v_exp from public.expenses where property_id = p_property and spent_on between p_from and p_to;
+  v_m0 := (date_trunc('month', p_to) - interval '5 months')::date;
+  return jsonb_build_object(
+    'revenue_paise', v_rev, 'expenses_paise', v_exp, 'profit_paise', v_rev - v_exp,
+    'margin', case when v_rev > 0 then round((v_rev - v_exp) * 100.0 / v_rev, 1) else null end,
+    'by_category', (select coalesce(jsonb_agg(jsonb_build_object('category', category, 'total_paise', t) order by t desc), '[]'::jsonb)
+                      from (select category, sum(amount_paise) t from public.expenses
+                             where property_id = p_property and spent_on between p_from and p_to group by category) c),
+    'months', (select coalesce(jsonb_agg(jsonb_build_object('month', to_char(m, 'YYYY-MM'),
+                 'revenue_paise', (select coalesce(sum(case when kind = 'refund' then -amount_paise else amount_paise end), 0) from public.payments
+                                    where property_id = p_property and date_trunc('month', (received_at at time zone v_tz)::date) = m),
+                 'expenses_paise', (select coalesce(sum(amount_paise), 0) from public.expenses
+                                     where property_id = p_property and date_trunc('month', spent_on) = m)) order by m), '[]'::jsonb)
+               from generate_series(v_m0, date_trunc('month', p_to)::date, interval '1 month') m));
+end $$;
+
+-- =====================================================================
+-- 2. Online payment links (Razorpay)
+-- =====================================================================
+-- Keys live here. No policies + no grants → readable only by the server (service role).
+create table if not exists public.property_secrets (
+  property_id         uuid primary key references public.properties(id) on delete cascade,
+  rzp_key_id          text check (rzp_key_id ~ '^rzp_(test|live)_[A-Za-z0-9]{8,32}$'),
+  rzp_key_secret      text check (char_length(rzp_key_secret) between 8 and 120),
+  rzp_webhook_secret  text check (char_length(rzp_webhook_secret) between 6 and 120),
+  updated_at          timestamptz not null default now()
+);
+alter table public.property_secrets enable row level security;
+revoke all on public.property_secrets from anon, authenticated;
+
+create table if not exists public.payment_links (
+  id             uuid primary key default gen_random_uuid(),
+  property_id    uuid not null,
+  booking_id     uuid not null,
+  rzp_link_id    text not null unique,
+  short_url      text not null,
+  amount_paise   int  not null check (amount_paise > 0),
+  status         text not null default 'created' check (status in ('created','paid','cancelled','expired')),
+  rzp_payment_id text,
+  payment_id     uuid,
+  created_by     uuid,
+  created_at     timestamptz not null default now(),
+  paid_at        timestamptz,
+  foreign key (booking_id, property_id) references public.bookings(id, property_id) on delete cascade
+);
+create index if not exists payment_links_booking on public.payment_links (booking_id, created_at desc);
+alter table public.payment_links enable row level security;
+drop policy if exists payment_links_select on public.payment_links;
+create policy payment_links_select on public.payment_links for select to authenticated
+  using (property_id in (select public.my_property_ids(array['owner','manager','front_desk','accountant']::public.member_role[])));
+revoke all on public.payment_links from anon, authenticated;
+grant select on public.payment_links to authenticated;
+
+-- Owner connects Razorpay. Leave a secret empty to keep the saved one.
+create or replace function public.set_razorpay_keys(p_property uuid, p_key_id text, p_key_secret text, p_webhook_secret text) returns void
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_id text := nullif(btrim(coalesce(p_key_id, '')), '');
+begin
+  perform public._assert_role(p_property, array['owner']::public.member_role[]);
+  if v_id is null then                                             -- disconnect
+    delete from public.property_secrets where property_id = p_property; return;
+  end if;
+  if v_id !~ '^rzp_(test|live)_[A-Za-z0-9]{8,32}$' then raise exception 'The Key ID looks like rzp_live_XXXXXXXX (Razorpay → Account & Settings → API Keys).'; end if;
+  insert into public.property_secrets (property_id, rzp_key_id, rzp_key_secret, rzp_webhook_secret)
+  values (p_property, v_id, nullif(btrim(coalesce(p_key_secret, '')), ''), nullif(btrim(coalesce(p_webhook_secret, '')), ''))
+  on conflict (property_id) do update set rzp_key_id = excluded.rzp_key_id,
+    rzp_key_secret = coalesce(excluded.rzp_key_secret, public.property_secrets.rzp_key_secret),
+    rzp_webhook_secret = coalesce(excluded.rzp_webhook_secret, public.property_secrets.rzp_webhook_secret), updated_at = now();
+  if (select rzp_key_secret from public.property_secrets where property_id = p_property) is null then
+    raise exception 'Enter the Key Secret too.';
+  end if;
+end $$;
+
+create or replace function public.razorpay_status(p_property uuid) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare s public.property_secrets%rowtype;
+begin
+  perform public._assert_role(p_property, array['owner','manager','front_desk','accountant']::public.member_role[]);
+  select * into s from public.property_secrets where property_id = p_property;
+  return jsonb_build_object('connected', s.rzp_key_id is not null and s.rzp_key_secret is not null,
+    'mode', case when s.rzp_key_id like 'rzp_live_%' then 'live' when s.rzp_key_id like 'rzp_test_%' then 'test' end,
+    'key_hint', case when s.rzp_key_id is not null then left(s.rzp_key_id, 9) || '…' || right(s.rzp_key_id, 4) end,
+    'webhook', s.rzp_webhook_secret is not null, 'updated_at', s.updated_at);
+end $$;
+
+-- Staff ask for a link (checks role, "Take payments" permission and the amount)
+create or replace function public.paylink_prepare(p_booking uuid, p_amount int) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare b public.bookings%rowtype; g public.guests%rowtype; p public.properties%rowtype;
+begin
+  select * into b from public.bookings where id = p_booking;
+  if not found then raise exception 'Booking not found.'; end if;
+  perform public._assert_role(b.property_id, array['owner','manager','front_desk']::public.member_role[]);
+  perform public._require_perm(b.property_id, 'record_payments');
+  if b.status in ('cancelled','no_show') then raise exception 'This booking is cancelled.'; end if;
+  if b.balance_paise <= 0 then raise exception 'Nothing is due on this booking.'; end if;
+  if p_amount is null or p_amount < 100 or p_amount > b.balance_paise then
+    raise exception 'Amount must be between ₹1 and the balance (₹%).', to_char(b.balance_paise / 100.0, 'FM99,99,99,990.00');
+  end if;
+  if not exists (select 1 from public.property_secrets where property_id = b.property_id and rzp_key_secret is not null) then
+    raise exception 'Connect Razorpay first: Settings → Property details → Online payments.';
+  end if;
+  select * into g from public.guests where id = b.guest_id;
+  select * into p from public.properties where id = b.property_id;
+  return jsonb_build_object('booking_id', b.id, 'property_id', b.property_id, 'code', b.code, 'amount_paise', p_amount,
+    'guest_name', g.full_name, 'guest_phone', g.phone, 'guest_email', g.email, 'property_name', p.name);
+end $$;
+
+create or replace function public.paylink_list(p_booking uuid) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare v_prop uuid;
+begin
+  select property_id into v_prop from public.bookings where id = p_booking;
+  if v_prop is null then raise exception 'Booking not found.'; end if;
+  perform public._assert_role(v_prop, array['owner','manager','front_desk','accountant']::public.member_role[]);
+  return (select coalesce(jsonb_agg(jsonb_build_object('id', l.id, 'rzp_link_id', l.rzp_link_id, 'short_url', l.short_url, 'amount_paise', l.amount_paise,
+            'status', l.status, 'created_at', l.created_at, 'paid_at', l.paid_at) order by l.created_at desc), '[]'::jsonb)
+          from public.payment_links l where l.booking_id = p_booking);
+end $$;
+
+-- ---------- server only (razorpay edge function, service role) ----------
+create or replace function public.paylink_keys(p_property uuid) returns jsonb
+language sql stable security definer set search_path = public, pg_temp as $$
+  select jsonb_build_object('key_id', rzp_key_id, 'key_secret', rzp_key_secret, 'webhook_secret', rzp_webhook_secret)
+    from public.property_secrets where property_id = p_property
+$$;
+
+create or replace function public.paylink_store(p_property uuid, p_booking uuid, p_link_id text, p_url text, p_amount int, p_user uuid) returns uuid
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_id uuid;
+begin
+  insert into public.payment_links (property_id, booking_id, rzp_link_id, short_url, amount_paise, created_by)
+  values (p_property, p_booking, p_link_id, p_url, p_amount, p_user) returning id into v_id;
+  insert into public.audit_log (property_id, entity, entity_id, booking_id, action, details, actor)
+  values (p_property, 'booking', p_booking, p_booking, 'paylink_created', jsonb_build_object('amount_paise', p_amount, 'url', p_url), p_user);
+  return v_id;
+end $$;
+
+-- Idempotent: a link is recorded as paid only once (webhook + status check can both arrive)
+create or replace function public.paylink_mark_paid(p_link_id text, p_payment_id text, p_method text, p_amount int) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare l public.payment_links%rowtype; b public.bookings%rowtype; v_amt int; v_pay uuid; v_method public.payment_method;
+begin
+  select * into l from public.payment_links where rzp_link_id = p_link_id for update;
+  if not found then return jsonb_build_object('error', 'unknown link'); end if;
+  if l.status = 'paid' then return jsonb_build_object('already', true); end if;
+  select * into b from public.bookings where id = l.booking_id for update;
+  v_amt := least(coalesce(p_amount, l.amount_paise), greatest(b.balance_paise, 0));
+  v_method := case lower(coalesce(p_method, '')) when 'card' then 'card' when 'upi' then 'upi' else 'bank' end;
+  if v_amt > 0 then
+    insert into public.payments (property_id, booking_id, kind, method, amount_paise, reference, note, received_by)
+    values (b.property_id, b.id, 'payment', v_method, v_amt, left(p_payment_id, 64), 'Paid online — Razorpay payment link', l.created_by)
+    returning id into v_pay;
+  end if;
+  update public.payment_links set status = 'paid', rzp_payment_id = p_payment_id, payment_id = v_pay, paid_at = now() where id = l.id;
+  insert into public.notifications (property_id, kind, title, body, booking_id)
+  values (b.property_id, 'payment', 'Online payment received',
+          format('%s · %s paid by %s via payment link', b.code, '₹' || to_char(coalesce(p_amount, l.amount_paise) / 100.0, 'FM99,99,99,990.00'), upper(coalesce(p_method, 'online'))), b.id);
+  return jsonb_build_object('recorded_paise', v_amt, 'payment_id', v_pay);
+end $$;
+
+create or replace function public.paylink_set_status(p_link_id text, p_status text) returns void
+language sql security definer set search_path = public, pg_temp as $$
+  update public.payment_links set status = p_status where rzp_link_id = p_link_id and status = 'created' and p_status in ('cancelled','expired')
+$$;
+
+-- ---------- permissions ----------
+revoke execute on function public.save_expense(uuid, jsonb), public.delete_expense(uuid), public.profit_summary(uuid, date, date),
+  public.set_razorpay_keys(uuid, text, text, text), public.razorpay_status(uuid), public.paylink_prepare(uuid, int), public.paylink_list(uuid),
+  public.paylink_keys(uuid), public.paylink_store(uuid, uuid, text, text, int, uuid), public.paylink_mark_paid(text, text, text, int),
+  public.paylink_set_status(text, text) from public, anon, authenticated;
+grant execute on function public.save_expense(uuid, jsonb), public.delete_expense(uuid), public.profit_summary(uuid, date, date),
+  public.set_razorpay_keys(uuid, text, text, text), public.razorpay_status(uuid), public.paylink_prepare(uuid, int), public.paylink_list(uuid)
+  to authenticated;
+grant execute on function public.paylink_keys(uuid), public.paylink_store(uuid, uuid, text, text, int, uuid),
+  public.paylink_mark_paid(text, text, text, int), public.paylink_set_status(text, text) to service_role;
+
+
+-- >>>>>>>>>>>>>>>>>>>> 022_admin_2fa.sql
+-- =====================================================================
+-- NammaStay · 022_admin_2fa.sql
+-- The admin website (admin.thenammastay.com) uses 2-step login: password
+-- + a 6-digit code from an authenticator app (Google Authenticator,
+-- Microsoft Authenticator, Authy…). Supabase calls this MFA / TOTP.
+-- Once an admin has set up their authenticator, every admin action
+-- (Overview, Subscribers, Leads, approving payments, prices…) is refused
+-- unless that sign-in was confirmed with the code (session level "aal2").
+-- Before setup, the admin website forces setup on first sign-in.
+-- Run AFTER 021_expenses_paylinks.sql.
+-- =====================================================================
+
+create or replace function public.is_platform_admin() returns boolean
+language sql stable security definer set search_path = public, pg_temp as $$
+  select exists (select 1 from public.platform_admins where user_id = auth.uid())
+     and (coalesce(auth.jwt() ->> 'aal', 'aal1') = 'aal2'
+          or not exists (select 1 from auth.mfa_factors f where f.user_id = auth.uid() and f.status = 'verified'))
+$$;
+
+-- For the admin sign-in page: is this login an admin, has it set up the authenticator, was the code entered?
+create or replace function public.admin_mfa_info() returns jsonb
+language sql stable security definer set search_path = public, pg_temp as $$
+  select jsonb_build_object(
+    'admin', exists (select 1 from public.platform_admins where user_id = auth.uid()),
+    'has_factor', exists (select 1 from auth.mfa_factors f where f.user_id = auth.uid() and f.status = 'verified'),
+    'aal', coalesce(auth.jwt() ->> 'aal', 'aal1'))
+$$;
+revoke execute on function public.admin_mfa_info() from public, anon;
+grant execute on function public.admin_mfa_info() to authenticated;
+
+-- Lost your phone? Run this (with the admin's email) to remove their authenticator,
+-- then they set it up again at the next sign-in:
+--   delete from auth.mfa_factors where user_id = (select id from auth.users where lower(email) = lower('admin@thenammastay.com'));
+
+
+-- >>>>>>>>>>>>>>>>>>>> 023_platform_invoices_reminders.sql
+-- =====================================================================
+-- NammaStay · 023_platform_invoices_reminders.sql
+--   1. GST invoices for NammaStay subscriptions (NammaStay → property).
+--      Issued automatically when an admin approves a subscription payment.
+--      Numbered per financial year (NS/2026-27/0001). Prices include GST.
+--      Same state as NammaStay → CGST + SGST, other state → IGST.
+--      Without NammaStay's GSTIN the document is a plain invoice/receipt.
+--   2. Billing reminders: trial ending (3 days, 1 day), trial ended,
+--      renewal due (7 days, 1 day), access ended. Each reminder is created
+--      once, appears in the owner's notifications, is emailed by the
+--      `billing-reminders` edge function (if email is set up) and shows in
+--      the admin website with a one-tap WhatsApp message.
+-- Rates/SAC: confirm with your CA. Run AFTER 022_admin_2fa.sql.
+-- =====================================================================
+
+-- ---------------------------------------------------------------- settings
+alter table public.platform_settings
+  add column if not exists legal_name     text check (char_length(legal_name) <= 120),
+  add column if not exists gstin          text check (gstin is null or gstin ~ '^[0-9]{2}[A-Z0-9]{10}[0-9A-Z]{3}$'),
+  add column if not exists address        text check (char_length(address) <= 300),
+  add column if not exists state_code     text not null default '33' check (state_code ~ '^[0-9]{2}$'),
+  add column if not exists sac            text not null default '998314' check (sac ~ '^[0-9]{4,8}$'),
+  add column if not exists gst_rate       numeric(5,2) not null default 18 check (gst_rate between 0 and 28),
+  add column if not exists invoice_prefix text not null default 'NS' check (invoice_prefix ~ '^[A-Z0-9-]{1,10}$');
+
+-- Owner's billing details (what goes on their subscription invoice)
+alter table public.properties
+  add column if not exists bill_name    text check (char_length(bill_name) <= 120),
+  add column if not exists bill_gstin   text check (bill_gstin is null or bill_gstin ~ '^[0-9]{2}[A-Z0-9]{10}[0-9A-Z]{3}$'),
+  add column if not exists bill_address text check (char_length(bill_address) <= 300),
+  add column if not exists bill_state   text check (bill_state is null or bill_state ~ '^[0-9]{2}$');
+
+create or replace function public.set_billing_details(p_property uuid, p jsonb) returns void
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_gstin text := nullif(upper(btrim(coalesce(p->>'bill_gstin', ''))), '');
+begin
+  perform public._assert_role(p_property, array['owner','manager']::public.member_role[]);
+  if v_gstin is not null and v_gstin !~ '^[0-9]{2}[A-Z0-9]{10}[0-9A-Z]{3}$' then raise exception 'Check the GSTIN — 15 characters, e.g. 33ABCDE1234F1Z5.'; end if;
+  update public.properties set
+    bill_name = nullif(left(btrim(coalesce(p->>'bill_name', '')), 120), ''),
+    bill_gstin = v_gstin,
+    bill_address = nullif(left(btrim(coalesce(p->>'bill_address', '')), 300), ''),
+    bill_state = coalesce(left(v_gstin, 2), nullif(p->>'bill_state', ''))
+  where id = p_property;
+end $$;
+
+create or replace function public.admin_invoice_settings() returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+begin
+  perform public._assert_platform_admin();
+  return (select jsonb_build_object('legal_name', legal_name, 'gstin', gstin, 'address', address, 'state_code', state_code,
+            'sac', sac, 'gst_rate', gst_rate, 'invoice_prefix', invoice_prefix, 'payee_name', payee_name,
+            'support_email', support_email, 'support_whatsapp', support_whatsapp)
+          from public.platform_settings where id = 1);
+end $$;
+
+create or replace function public.admin_save_invoice_settings(p jsonb) returns void
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_gstin text := nullif(upper(btrim(coalesce(p->>'gstin', ''))), '');
+begin
+  perform public._assert_platform_admin();
+  if v_gstin is not null and v_gstin !~ '^[0-9]{2}[A-Z0-9]{10}[0-9A-Z]{3}$' then raise exception 'Check the GSTIN — 15 characters.'; end if;
+  update public.platform_settings set
+    legal_name = nullif(left(btrim(coalesce(p->>'legal_name', '')), 120), ''),
+    gstin = v_gstin,
+    address = nullif(left(btrim(coalesce(p->>'address', '')), 300), ''),
+    state_code = coalesce(left(v_gstin, 2), nullif(p->>'state_code', ''), state_code),
+    sac = coalesce(nullif(btrim(coalesce(p->>'sac', '')), ''), sac),
+    gst_rate = coalesce(nullif(p->>'gst_rate', '')::numeric, gst_rate),
+    invoice_prefix = coalesce(nullif(upper(btrim(coalesce(p->>'invoice_prefix', ''))), ''), invoice_prefix),
+    updated_at = now()
+  where id = 1;
+end $$;
+
+-- ---------------------------------------------------------------- invoices
+create table if not exists public.platform_invoice_counters (fy text primary key, last_no int not null default 0);
+create table if not exists public.platform_invoices (
+  id          uuid primary key default gen_random_uuid(),
+  property_id uuid not null references public.properties(id) on delete cascade,
+  payment_id  uuid not null unique references public.subscription_payments(id) on delete cascade,
+  number      text not null unique,
+  fy          text not null,
+  issued_at   timestamptz not null default now(),
+  total_paise int  not null,
+  doc         jsonb not null
+);
+create index if not exists platform_invoices_prop on public.platform_invoices (property_id, issued_at desc);
+alter table public.platform_invoice_counters enable row level security;
+alter table public.platform_invoices enable row level security;
+revoke all on public.platform_invoice_counters, public.platform_invoices from anon, authenticated;
+
+create or replace function public._issue_platform_invoice(p_payment uuid) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  sp public.subscription_payments%rowtype; ps public.platform_settings%rowtype; pr public.properties%rowtype; pl public.plans%rowtype;
+  v_owner record; v_existing public.platform_invoices%rowtype; v_fy text; v_no int; v_num text; v_doc jsonb;
+  v_gst boolean; v_inter boolean; v_rate numeric; v_taxable bigint; v_tax bigint; v_buyer_state text; v_day date;
+begin
+  select * into v_existing from public.platform_invoices where payment_id = p_payment;
+  if found then return v_existing.doc; end if;
+  select * into sp from public.subscription_payments where id = p_payment;
+  if not found or sp.status <> 'approved' then return null; end if;
+  select * into ps from public.platform_settings where id = 1;
+  select * into pr from public.properties where id = sp.property_id;
+  select * into pl from public.plans where id = sp.plan_id;
+  select m.display_name, m.email into v_owner from public.property_members m where m.property_id = pr.id and m.role = 'owner' order by m.created_at limit 1;
+
+  v_gst := ps.gstin is not null;
+  v_rate := case when v_gst then ps.gst_rate else 0 end;
+  v_taxable := round(sp.amount_paise * 100.0 / (100 + v_rate));
+  v_tax := sp.amount_paise - v_taxable;
+  v_buyer_state := coalesce(left(pr.bill_gstin, 2), pr.bill_state);
+  v_inter := v_buyer_state is not null and v_buyer_state <> ps.state_code;
+
+  v_day := (coalesce(sp.reviewed_at, now()) at time zone 'Asia/Kolkata')::date;
+  v_fy := case when extract(month from v_day) >= 4 then extract(year from v_day)::int else extract(year from v_day)::int - 1 end::text;
+  v_fy := v_fy || '-' || right(((v_fy::int) + 1)::text, 2);
+  insert into public.platform_invoice_counters (fy, last_no) values (v_fy, 1)
+  on conflict (fy) do update set last_no = public.platform_invoice_counters.last_no + 1 returning last_no into v_no;
+  v_num := ps.invoice_prefix || '/' || v_fy || '/' || lpad(v_no::text, 4, '0');
+
+  v_doc := jsonb_build_object(
+    'number', v_num, 'issued_at', coalesce(sp.reviewed_at, now()), 'fy', v_fy, 'subscription', true,
+    'title', case when v_gst then 'Tax invoice' else 'Invoice' end, 'gst', v_gst, 'inter_state', v_gst and v_inter,
+    'seller', jsonb_build_object('name', 'NammaStay', 'legal_name', coalesce(ps.legal_name, ps.payee_name, 'NammaStay'), 'gstin', ps.gstin,
+                                 'address', ps.address, 'phone', ps.support_whatsapp, 'email', ps.support_email),
+    'buyer', jsonb_build_object('name', coalesce(pr.bill_name, pr.name), 'company', case when pr.bill_name is not null and pr.bill_name <> pr.name then pr.name end,
+                                'gstin', pr.bill_gstin, 'address', coalesce(pr.bill_address, concat_ws(', ', pr.address, pr.city)),
+                                'phone', pr.phone, 'email', v_owner.email),
+    'period', jsonb_build_object('plan', pl.name, 'kind', pl.kind, 'from', sp.period_start, 'to', sp.period_end, 'property', pr.name),
+    'lines', jsonb_build_array(jsonb_build_object(
+       'desc', format('NammaStay subscription — %s plan (%s → %s) · %s', pl.name,
+                      to_char(sp.period_start at time zone 'Asia/Kolkata', 'DD Mon YYYY'), to_char(sp.period_end at time zone 'Asia/Kolkata', 'DD Mon YYYY'), pr.name),
+       'sac', ps.sac, 'qty', 1, 'rate_paise', sp.amount_paise, 'amount_paise', sp.amount_paise, 'gst_rate', v_rate,
+       'taxable_paise', v_taxable, 'tax_paise', v_tax)),
+    'amount_paise', sp.amount_paise, 'taxable_paise', v_taxable,
+    'cgst_paise', case when v_gst and not v_inter then v_tax / 2 else 0 end,
+    'sgst_paise', case when v_gst and not v_inter then v_tax - v_tax / 2 else 0 end,
+    'igst_paise', case when v_gst and v_inter then v_tax else 0 end,
+    'paid_paise', sp.amount_paise, 'balance_paise', 0,
+    'payments', jsonb_build_array(jsonb_build_object('code', 'UPI', 'kind', 'payment', 'method', 'upi', 'amount_paise', sp.amount_paise,
+                                                     'received_at', sp.submitted_at, 'reference', sp.utr)));
+  insert into public.platform_invoices (property_id, payment_id, number, fy, issued_at, total_paise, doc)
+  values (pr.id, sp.id, v_num, v_fy, coalesce(sp.reviewed_at, now()), sp.amount_paise, v_doc);
+  insert into public.notifications (property_id, kind, title, body)
+  values (pr.id, 'subscription', 'Invoice ' || v_num || ' is ready', 'Settings → Billing → Your invoices');
+  return v_doc;
+end $$;
+
+create or replace function public._on_sub_payment_approved() returns trigger
+language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  if new.status = 'approved' and old.status is distinct from 'approved' then perform public._issue_platform_invoice(new.id); end if;
+  return new;
+end $$;
+drop trigger if exists sub_payment_invoice on public.subscription_payments;
+create trigger sub_payment_invoice after update of status on public.subscription_payments
+  for each row execute function public._on_sub_payment_approved();
+
+-- Owner / manager: their invoices
+create or replace function public.my_platform_invoices(p_property uuid) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+begin
+  perform public._assert_role(p_property, array['owner','manager']::public.member_role[]);
+  return (select coalesce(jsonb_agg(jsonb_build_object('number', number, 'issued_at', issued_at, 'total_paise', total_paise, 'doc', doc)
+            order by issued_at desc), '[]'::jsonb) from public.platform_invoices where property_id = p_property);
+end $$;
+
+-- Admin: one property, or the latest across all
+create or replace function public.admin_platform_invoices(p_property uuid default null) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+begin
+  perform public._assert_platform_admin();
+  return (select coalesce(jsonb_agg(jsonb_build_object('number', i.number, 'issued_at', i.issued_at, 'total_paise', i.total_paise,
+            'payment_id', i.payment_id, 'property', p.name, 'property_id', p.id, 'doc', i.doc) order by i.issued_at desc), '[]'::jsonb)
+          from (select * from public.platform_invoices where p_property is null or property_id = p_property order by issued_at desc limit 300) i
+          join public.properties p on p.id = i.property_id);
+end $$;
+
+-- Admin: create invoices for payments approved before this update
+create or replace function public.admin_backfill_invoices() returns int
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare r record; n int := 0;
+begin
+  perform public._assert_platform_admin();
+  for r in select sp.id from public.subscription_payments sp left join public.platform_invoices i on i.payment_id = sp.id
+            where sp.status = 'approved' and i.id is null order by sp.reviewed_at loop
+    perform public._issue_platform_invoice(r.id); n := n + 1;
+  end loop;
+  return n;
+end $$;
+
+-- ---------------------------------------------------------------- reminders
+create table if not exists public.billing_reminders (
+  id               uuid primary key default gen_random_uuid(),
+  property_id      uuid not null references public.properties(id) on delete cascade,
+  kind             text not null check (kind in ('trial_3d','trial_1d','trial_ended','renew_7d','renew_1d','expired')),
+  ends_at          timestamptz not null,
+  created_at       timestamptz not null default now(),
+  emailed_at       timestamptz,
+  whatsapp_done_at timestamptz,
+  unique (property_id, kind, ends_at)
+);
+create index if not exists billing_reminders_todo on public.billing_reminders (created_at desc);
+alter table public.billing_reminders enable row level security;
+revoke all on public.billing_reminders from anon, authenticated;
+
+create or replace function public._reminder_text(p_kind text, p_ends timestamptz) returns jsonb
+language sql immutable set search_path = public, pg_temp as $$
+  select jsonb_build_object(
+    'title', case p_kind when 'trial_3d' then 'Your free trial ends in 3 days' when 'trial_1d' then 'Your free trial ends tomorrow'
+             when 'trial_ended' then 'Your free trial has ended' when 'renew_7d' then 'Your NammaStay plan renews in 7 days'
+             when 'renew_1d' then 'Your NammaStay plan ends tomorrow' else 'Your NammaStay plan has ended' end,
+    'body', case when p_kind in ('trial_ended','expired') then 'Choose a plan in Settings → Billing to keep using NammaStay.'
+             else 'Ends ' || to_char(p_ends at time zone 'Asia/Kolkata', 'DD Mon YYYY') || ' — Settings → Billing to choose a plan.' end)
+$$;
+
+-- Creates today's reminders (once each) + in-app notifications. Safe to run many times a day.
+create or replace function public.run_billing_reminders() returns int
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare r record; v_kind text; v_days int; v_id uuid; n int := 0; v_txt jsonb;
+begin
+  if auth.uid() is not null then perform public._assert_platform_admin(); end if;      -- cron (no user) or an admin
+  for r in
+    select s.property_id, s.trial_ends_at, s.paid_until,
+           (s.paid_until is not null and s.paid_until >= s.trial_ends_at) as paid,
+           greatest(s.trial_ends_at, coalesce(s.paid_until, s.trial_ends_at)) as ends_at
+      from public.subscriptions s
+     where not s.is_complimentary and not coalesce(s.is_suspended, false)
+  loop
+    v_days := (r.ends_at at time zone 'Asia/Kolkata')::date - (now() at time zone 'Asia/Kolkata')::date;
+    v_kind := case
+      when not r.paid and v_days between 2 and 3 then 'trial_3d'
+      when not r.paid and v_days between 0 and 1 and r.ends_at > now() then 'trial_1d'
+      when not r.paid and r.ends_at <= now() and v_days >= -6 then 'trial_ended'
+      when r.paid and v_days between 4 and 7 then 'renew_7d'
+      when r.paid and v_days between 0 and 1 and r.ends_at > now() then 'renew_1d'
+      when r.paid and r.ends_at <= now() and v_days >= -6 then 'expired'
+    end;
+    continue when v_kind is null;
+    insert into public.billing_reminders (property_id, kind, ends_at) values (r.property_id, v_kind, r.ends_at)
+    on conflict (property_id, kind, ends_at) do nothing returning id into v_id;
+    if v_id is not null then
+      v_txt := public._reminder_text(v_kind, r.ends_at);
+      insert into public.notifications (property_id, kind, title, body) values (r.property_id, 'subscription', v_txt->>'title', v_txt->>'body');
+      n := n + 1;
+    end if;
+  end loop;
+  return n;
+end $$;
+
+-- Admin: reminders to follow up (WhatsApp) — newest first
+create or replace function public.admin_reminders(p_all boolean default false) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+begin
+  perform public._assert_platform_admin();
+  return (select coalesce(jsonb_agg(x order by x->>'created_at' desc), '[]'::jsonb) from (
+    select jsonb_build_object('id', b.id, 'kind', b.kind, 'ends_at', b.ends_at, 'created_at', b.created_at, 'emailed_at', b.emailed_at,
+             'whatsapp_done_at', b.whatsapp_done_at, 'property_id', p.id, 'property', p.name, 'city', p.city, 'phone', p.phone,
+             'owner', (select coalesce(m.display_name, m.email) from public.property_members m where m.property_id = p.id and m.role = 'owner' order by m.created_at limit 1),
+             'email', (select m.email from public.property_members m where m.property_id = p.id and m.role = 'owner' order by m.created_at limit 1),
+             'text', public._reminder_text(b.kind, b.ends_at)) x
+      from public.billing_reminders b join public.properties p on p.id = b.property_id
+     where p_all or (b.whatsapp_done_at is null and b.created_at > now() - interval '10 days')
+     order by b.created_at desc limit 200) q);
+end $$;
+
+create or replace function public.admin_mark_reminder(p_id uuid, p_done boolean default true) returns void
+language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  perform public._assert_platform_admin();
+  update public.billing_reminders set whatsapp_done_at = case when p_done then now() end where id = p_id;
+end $$;
+
+-- Server only (billing-reminders edge function): reminders still to email, and mark them sent
+create or replace function public.reminders_to_email() returns jsonb
+language sql stable security definer set search_path = public, pg_temp as $$
+  select coalesce(jsonb_agg(jsonb_build_object('id', b.id, 'kind', b.kind, 'ends_at', b.ends_at, 'property', p.name,
+           'email', m.email, 'name', coalesce(m.display_name, 'there'), 'text', public._reminder_text(b.kind, b.ends_at))), '[]'::jsonb)
+    from public.billing_reminders b join public.properties p on p.id = b.property_id
+    join lateral (select email, display_name from public.property_members where property_id = p.id and role = 'owner' and email is not null order by created_at limit 1) m on true
+   where b.emailed_at is null and b.created_at > now() - interval '3 days'
+$$;
+create or replace function public.mark_reminders_emailed(p_ids uuid[]) returns void
+language sql security definer set search_path = public, pg_temp as $$
+  update public.billing_reminders set emailed_at = now() where id = any (p_ids)
+$$;
+
+-- ---------------------------------------------------------------- owner billing info now includes billing details
+create or replace function public.my_billing_details(p_property uuid) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+begin
+  perform public._assert_role(p_property, array['owner','manager']::public.member_role[]);
+  return (select jsonb_build_object('bill_name', bill_name, 'bill_gstin', bill_gstin, 'bill_address', bill_address, 'bill_state', bill_state, 'name', name)
+            from public.properties where id = p_property);
+end $$;
+
+-- ---------------------------------------------------------------- permissions
+revoke execute on function public.set_billing_details(uuid, jsonb), public.admin_invoice_settings(), public.admin_save_invoice_settings(jsonb),
+  public._issue_platform_invoice(uuid), public._on_sub_payment_approved(), public.my_platform_invoices(uuid), public.admin_platform_invoices(uuid),
+  public.admin_backfill_invoices(), public._reminder_text(text, timestamptz), public.run_billing_reminders(), public.admin_reminders(boolean),
+  public.admin_mark_reminder(uuid, boolean), public.reminders_to_email(), public.mark_reminders_emailed(uuid[]), public.my_billing_details(uuid)
+  from public, anon, authenticated;
+grant execute on function public.set_billing_details(uuid, jsonb), public.admin_invoice_settings(), public.admin_save_invoice_settings(jsonb),
+  public.my_platform_invoices(uuid), public.admin_platform_invoices(uuid), public.admin_backfill_invoices(), public.run_billing_reminders(),
+  public.admin_reminders(boolean), public.admin_mark_reminder(uuid, boolean), public.my_billing_details(uuid) to authenticated;
+grant execute on function public.run_billing_reminders(), public.reminders_to_email(), public.mark_reminders_emailed(uuid[]) to service_role;

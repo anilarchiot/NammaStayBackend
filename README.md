@@ -26,6 +26,17 @@ The website lives in the separate frontend repo (**NammaStayFrontend**, served b
 | `supabase/migrations/016_extras.sql` | Extras on the bill: price list + charges (food, laundry, rentals…) |
 | `supabase/migrations/017_role_permissions.sql` | Owner-configurable permissions per role, enforced in the database |
 | `supabase/migrations/018_invoice_offers.sql` | GST invoices & receipts, regular-guest offers |
+| `supabase/migrations/019_prices_oct_2026.sql` | New subscription prices (Oct 2026) |
+| `supabase/migrations/020_ota_sync.sql` | OTA calendar sync (iCal): export links per bed/room, imported OTA bookings |
+| `supabase/functions/ical`, `supabase/functions/ota-sync` | Serve calendar links · import OTA calendars every 30 min |
+| `supabase/migrations/021_expenses_paylinks.sql` | Expenses & profit; Razorpay payment links (keys write-only) |
+| `supabase/migrations/022_admin_2fa.sql` | Admin website: 2-step login required for all admin actions |
+| `supabase/migrations/023_platform_invoices_reminders.sql` | GST invoices for subscriptions; trial/renewal reminders |
+| `supabase/setup/undo_guest_app.sql` | Only if you ran the earlier 024_guest_app.sql — removes the guest app |
+| `supabase/functions/billing-reminders` | Daily: creates reminders, emails owners (Resend) |
+| `supabase/setup/reminders_schedule.sql` | Runs billing reminders every morning |
+| `supabase/functions/razorpay` | Creates payment links, checks status, receives Razorpay webhooks |
+| `supabase/setup/ota_schedule.sql` | Runs OTA sync every 30 minutes (edit project ref + secret first) |
 | `supabase/setup/004_seed.sql` | Your hostel, rooms, 9 beds and owner login — edit the email first |
 | `supabase/setup/005_schedule.sql` | Nightly ID-photo cleanup — edit project ref + secret first |
 | `supabase/setup/undo_direct_booking.sql` | Only if you ran the earlier 018 with the booking page — removes the page |
