@@ -33,6 +33,8 @@ The website lives in the separate frontend repo (**NammaStayFrontend**, served b
 | `supabase/migrations/022_admin_2fa.sql` | Admin website: 2-step login required for all admin actions |
 | `supabase/migrations/023_platform_invoices_reminders.sql` | GST invoices for subscriptions; trial/renewal reminders |
 | `supabase/setup/undo_guest_app.sql` | Only if you ran the earlier 024_guest_app.sql — removes the guest app |
+| `supabase/migrations/024_form_c.sql` | Form C: passport/visa details, deadlines, FRRO numbers |
+| `supabase/migrations/025_admin_growth.sql` | Admin: customer health, revenue, coupons, activity log, lead → property |
 | `supabase/functions/billing-reminders` | Daily: creates reminders, emails owners (Resend) |
 | `supabase/setup/reminders_schedule.sql` | Runs billing reminders every morning |
 | `supabase/functions/razorpay` | Creates payment links, checks status, receives Razorpay webhooks |

@@ -27,7 +27,7 @@ This guide lives in the **backend repo**. The website is in the separate **front
 | `login.html` + other `*.html`, `assets/` | The app. Works as a demo until `assets/js/config.js` is filled in. |
 | `assets/js/core.js` | Login check, roles, formatting, dialogs, notification bell. |
 | `assets/js/pages/*.js` | One script per screen; each calls the database functions. |
-| `supabase/migrations/001–003, 006–023` | The database structure: run in order (or `SETUP_ALL.sql`). |
+| `supabase/migrations/001–003, 006–025` | The database structure: run in order (or `SETUP_ALL.sql`). |
 | `supabase/setup/004_seed.sql`, `005_schedule.sql` | One-time setup you edit before running. |
 | `supabase/tests/01_security_checks.sql` | Security checks — run before launch and after every change. |
 | `supabase/tests/02_load_test.sql` | 1.5 lakh-booking load test — **separate test project only**. |
@@ -70,6 +70,8 @@ Supabase → **SQL Editor** → New query. Paste and **Run** each file, in order
 19. `supabase/migrations/021_expenses_paylinks.sql` — expenses & profit, Razorpay payment links
 20. `supabase/migrations/022_admin_2fa.sql` — 2-step login for the admin website
 21. `supabase/migrations/023_platform_invoices_reminders.sql` — GST invoices for subscriptions + billing reminders
+22. `supabase/migrations/024_form_c.sql` — Form C for foreign guests
+23. `supabase/migrations/025_admin_growth.sql` — admin: health, revenue, coupons, activity log, lead → property
 
 Shortcut: `supabase/SETUP_ALL.sql` contains all sixteen in one file — paste it once and Run.
 
@@ -144,7 +146,7 @@ Also open **Advisors → Security Advisor** and **Performance Advisor** in Supab
    WEBHOOK_SECRET=$(openssl rand -hex 24); CRON_SECRET=$(openssl rand -hex 24)
    echo "$WEBHOOK_SECRET  $CRON_SECRET"      # save both in your password manager
    supabase secrets set RESEND_API_KEY=re_xxx MAIL_FROM="Social Backpackers <bookings@thenammastay.in>" \
-     WEBHOOK_SECRET=$WEBHOOK_SECRET CRON_SECRET=$CRON_SECRET SITE_URL=https://thenammastay.in
+     WEBHOOK_SECRET=$WEBHOOK_SECRET CRON_SECRET=$CRON_SECRET APP_URL=https://app.thenammastay.com
    supabase functions deploy notify-booking --no-verify-jwt
    supabase functions deploy purge-id-docs  --no-verify-jwt
    ```
@@ -488,3 +490,45 @@ Lost phone: `delete from auth.mfa_factors where user_id = (select id from auth.u
 - Daily schedule: edit and run `supabase/setup/reminders_schedule.sql` — option A (in-app + email, needs the `billing-reminders` function: GitHub Action or `supabase functions deploy billing-reminders --no-verify-jwt`; secrets CRON_SECRET, RESEND_API_KEY, MAIL_FROM, SITE_URL) or option B (in-app only, pure SQL). **Check now** on the admin Overview runs it at any time.
 
 **Guest app removed.** If you ran `024_guest_app.sql` earlier, run `supabase/setup/undo_guest_app.sql` once.
+
+## 40. Form C — foreign guests (024_form_c)
+
+**Database:** run `supabase/migrations/024_form_c.sql`.
+
+Every foreign guest must be reported to FRRO on Form C within 24 hours of arrival (indianfrro.gov.in/frro/FormC), and again after check-out. NammaStay:
+- **Form C** menu (owner, manager, front desk) with a badge for reports due: tabs **Arrival due** (24-hour countdown, red when overdue), **Departure due**, **Arriving soon**, **Done**.
+- **Passport & visa:** passport no/place/dates, visa no/type/place/dates, arrival in India, port, next destination, purpose, home address.
+- **Copy for FRRO:** every value in the portal's order (dates dd/mm/yyyy) with a Copy button each, plus the guest's ID photos. Submit on the FRRO portal (captcha), then **Arrival submitted / Departure submitted** saves the FRRO number on the booking.
+- Dashboard card "Form C due", a Form C line on foreign guests' bookings, and a reminder on the check-in form when a foreign nationality is chosen.
+- Your property must be registered on indianfrro.gov.in for Form C (accommodation login) — that's done once with FRRO, outside NammaStay.
+
+## 41. Admin: customer health, revenue & coupons, activity log, lead → property (025)
+
+**Database:** run `supabase/migrations/025_admin_growth.sql`. **Admin website:** upload the new admin-site zip (new pages `revenue.html`, `activity.html`).
+
+- **Customer health** (Overview, and each property's page): setup checklist — rooms, UPI, staff, first booking, first payment, regular use — and a 0–100 score (setup 40 + bookings in 14 days 30 + active days in 7 days 30). Lowest first: call the at-risk ones.
+- **Revenue & coupons:** MRR (yearly plans ÷ 12), ARR, collected this month, paying vs trial, trial → paid in 90 days, ended in 30 days, 12-month chart, plan mix. **Coupons:** % or ₹ off, optional plans, max uses and expiry; owners enter the code in Settings → Billing; uses count when you approve the payment; the coupon shows on the pending payment.
+- **Activity log:** every change made by an admin — payments approved/rejected, subscriptions extended/suspended/made free, prices, settings, properties, coupons, leads, admins — with before → after values.
+- **Lead → property:** Leads → a lead → **Create property from this lead** opens Add property pre-filled; the lead is marked Won and linked.
+
+## 42. Three websites: homepage, hostel app, admin
+
+| Website | Address | GitHub repo | Zip |
+|---|---|---|---|
+| Homepage (marketing) | thenammastay.com | NammaStayFrontend (existing) | `nammastay-marketing-site.zip` |
+| Hostel app | **app.thenammastay.com** | **NammaStayApp** (new) | `nammastay-hostel-app.zip` |
+| Admin | admin.thenammastay.com | NammaStayAdmin | `nammastay-admin-site.zip` |
+
+All three use the **same Supabase project** — paste the same Project URL + anon key into each repo's `assets/js/config.js`.
+
+**Set up the hostel app (once):**
+1. GitHub → New repository **NammaStayApp** → upload `nammastay-hostel-app.zip` contents (keep `CNAME`) → edit `assets/js/config.js` (keys).
+2. Settings → Pages → Deploy from branch main / root → Custom domain `app.thenammastay.com`.
+3. GoDaddy → DNS → Add **CNAME**: Name `app`, Value `anilarchiot.github.io`.
+4. GitHub Pages → wait for "DNS check successful" → **Enforce HTTPS**.
+5. Supabase → Authentication → URL Configuration: **Site URL** `https://app.thenammastay.com`; **Redirect URLs** add `https://app.thenammastay.com/**` (keep the others).
+6. Supabase → Edge Functions → Secrets: remove `SITE_URL` if you set it; optional `APP_URL=https://app.thenammastay.com` (that's the default anyway).
+
+**Then the homepage repo (NammaStayFrontend):** delete the old app files and upload `nammastay-marketing-site.zip` contents (keep your `config.js`). It contains the homepage plus small redirect pages, so old links — guests' check-in links, bookmarks like thenammastay.com/login.html — open on app.thenammastay.com automatically.
+
+**Admin repo:** upload `nammastay-admin-site.zip` (keep your `config.js`, but check `siteUrl` is now `https://app.thenammastay.com`).

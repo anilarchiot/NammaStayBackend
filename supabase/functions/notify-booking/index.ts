@@ -4,14 +4,14 @@
 //   • a confirmation + self check-in link to the guest (if staff ticked the box)
 //
 // Triggered by a Database Webhook on bookings INSERT (see GO-LIVE.md, step 7).
-// Secrets:  RESEND_API_KEY, MAIL_FROM, WEBHOOK_SECRET, SITE_URL
+// Secrets:  RESEND_API_KEY, MAIL_FROM, WEBHOOK_SECRET, APP_URL (optional)
 // Deploy:   supabase functions deploy notify-booking --no-verify-jwt
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const sb = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY") ?? "";
 const MAIL_FROM = Deno.env.get("MAIL_FROM") ?? "NammaStay <bookings@thenammastay.com>";
-const SITE_URL = (Deno.env.get("SITE_URL") ?? "https://thenammastay.com").replace(/\/$/, "");
+const SITE_URL = (Deno.env.get("APP_URL") ?? "https://app.thenammastay.com").replace(/\/$/, "");   // the hostel app
 const SECRET = Deno.env.get("WEBHOOK_SECRET") ?? "";
 
 const esc = (s: unknown) =>

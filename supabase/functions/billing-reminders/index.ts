@@ -1,7 +1,7 @@
 // NammaStay · billing-reminders — daily (pg_cron, header x-cron-secret).
 // 1) creates today's reminders (trial ending/ended, renewal due/ended) + in-app notifications
 // 2) emails each owner once (Resend), if RESEND_API_KEY is set
-// Secrets: CRON_SECRET, RESEND_API_KEY (optional), MAIL_FROM (e.g. "NammaStay <billing@thenammastay.com>"), SITE_URL
+// Secrets: CRON_SECRET, RESEND_API_KEY (optional), MAIL_FROM (e.g. "NammaStay <billing@thenammastay.com>"), APP_URL (optional)
 // Deploy: supabase functions deploy billing-reminders --no-verify-jwt
 import { createClient } from "npm:@supabase/supabase-js@2";
 
@@ -9,7 +9,7 @@ const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE
 const SECRET = Deno.env.get("CRON_SECRET") ?? "";
 const RESEND = Deno.env.get("RESEND_API_KEY") ?? "";
 const FROM = Deno.env.get("MAIL_FROM") ?? "NammaStay <onboarding@resend.dev>";
-const SITE = (Deno.env.get("SITE_URL") ?? "https://thenammastay.com").replace(/\/$/, "");
+const SITE = (Deno.env.get("APP_URL") ?? "https://app.thenammastay.com").replace(/\/$/, "");   // the hostel app
 const esc = (s: string) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 
 type R = { id: string; kind: string; property: string; email: string; name: string; text: { title: string; body: string } };

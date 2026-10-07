@@ -3,11 +3,12 @@
 // and sends the person a short thank-you (if they gave an email).
 //
 // Triggered by a Database Webhook on leads INSERT (see GO-LIVE.md step 7b).
-// Secrets:  RESEND_API_KEY, MAIL_FROM, WEBHOOK_SECRET, SITE_URL, LEADS_NOTIFY_EMAIL
+// Secrets:  RESEND_API_KEY, MAIL_FROM, WEBHOOK_SECRET, LEADS_NOTIFY_EMAIL, MARKETING_URL / ADMIN_URL (optional)
 // Deploy:   supabase functions deploy notify-lead --no-verify-jwt
 const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY") ?? "";
 const MAIL_FROM = Deno.env.get("MAIL_FROM") ?? "NammaStay <hello@thenammastay.com>";
-const SITE_URL = (Deno.env.get("SITE_URL") ?? "https://thenammastay.com").replace(/\/$/, "");
+const SITE_URL = (Deno.env.get("MARKETING_URL") ?? "https://thenammastay.com").replace(/\/$/, "");   // the homepage
+const ADMIN_URL = (Deno.env.get("ADMIN_URL") ?? "https://admin.thenammastay.com").replace(/\/$/, "");
 const SECRET = Deno.env.get("WEBHOOK_SECRET") ?? "";
 const NOTIFY = Deno.env.get("LEADS_NOTIFY_EMAIL") ?? "";
 
@@ -43,7 +44,7 @@ Deno.serve(async (req) => {
         </table>
         <p style="margin:16px 0 0">
           ${wa ? `<a href="${wa}" style="margin-right:16px">WhatsApp them</a>` : ""}
-          <a href="${SITE_URL}/leads.html">Open leads in NammaStay</a></p>
+          <a href="${ADMIN_URL}/leads.html">Open leads in NammaStay admin</a></p>
       </div>`, l.email || undefined).catch((e) => errors.push(String(e)));
   }
 
