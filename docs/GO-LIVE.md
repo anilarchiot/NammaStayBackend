@@ -27,7 +27,7 @@ This guide lives in the **backend repo**. The website is in the separate **front
 | `login.html` + other `*.html`, `assets/` | The app. Works as a demo until `assets/js/config.js` is filled in. |
 | `assets/js/core.js` | Login check, roles, formatting, dialogs, notification bell. |
 | `assets/js/pages/*.js` | One script per screen; each calls the database functions. |
-| `supabase/migrations/001–003, 006–025` | The database structure: run in order (or `SETUP_ALL.sql`). |
+| `supabase/migrations/001–003, 006–028` | The database structure: run in order (or `SETUP_ALL.sql`). |
 | `supabase/setup/004_seed.sql`, `005_schedule.sql` | One-time setup you edit before running. |
 | `supabase/tests/01_security_checks.sql` | Security checks — run before launch and after every change. |
 | `supabase/tests/02_load_test.sql` | 1.5 lakh-booking load test — **separate test project only**. |
@@ -72,6 +72,9 @@ Supabase → **SQL Editor** → New query. Paste and **Run** each file, in order
 21. `supabase/migrations/023_platform_invoices_reminders.sql` — GST invoices for subscriptions + billing reminders
 22. `supabase/migrations/024_form_c.sql` — Form C for foreign guests
 23. `supabase/migrations/025_admin_growth.sql` — admin: health, revenue, coupons, activity log, lead → property
+24. `supabase/migrations/026_pricing_housekeeping.sql` — seasonal & weekend pricing, housekeeping board
+25. `supabase/migrations/027_channex.sql` — two-way channel manager (Channex)
+26. `supabase/migrations/028_onboarding.sql` — setup wizard for new owners
 
 Shortcut: `supabase/SETUP_ALL.sql` contains all sixteen in one file — paste it once and Run.
 
@@ -532,3 +535,42 @@ All three use the **same Supabase project** — paste the same Project URL + ano
 **Then the homepage repo (NammaStayFrontend):** delete the old app files and upload `nammastay-marketing-site.zip` contents (keep your `config.js`). It contains the homepage plus small redirect pages, so old links — guests' check-in links, bookmarks like thenammastay.com/login.html — open on app.thenammastay.com automatically.
 
 **Admin repo:** upload `nammastay-admin-site.zip` (keep your `config.js`, but check `siteUrl` is now `https://app.thenammastay.com`).
+
+## 43. Seasonal & weekend pricing + housekeeping (026)
+
+**Database:** run `supabase/migrations/026_pricing_housekeeping.sql`. **Hostel app:** upload the new app zip.
+
+**Pricing** — Settings → Room types & pricing → **Seasonal & weekend pricing**:
+- **Every week** (e.g. Fri & Sat nights +20%) or **Dates / season** (e.g. 20 Dec – 5 Jan +30%, optionally only some nights of the week).
+- Change by % (+/−), ₹ a night (+/−), or a fixed price a night; all rooms or chosen rooms; optional minimum stay (2–7 nights).
+- Dates beat weekends when both apply. New bookings (and date / bed changes) use the rules: the booking's nightly rate is the average of its nights, so totals, discounts, extras and invoices stay correct. Existing bookings keep their price. The booking form shows the price for the chosen dates; "Next 14 nights" previews each bed/room.
+
+**Housekeeping** — menu → **Housekeeping** (badge = beds/rooms to clean):
+- Check-out marks the bed/room **Dirty** automatically. Tap **Start cleaning → Mark ready**; ⋯ for Check / note ("change bedsheet").
+- Beds with a guest **arriving today** come first ("clean first"). Dashboard card "N beds to clean".
+
+## 44. Two-way channel manager — Channex (027) — TEST MODE first
+
+Real-time, two-way connection with Booking.com, Agoda, Expedia, Airbnb, MakeMyTrip/Goibibo, Hostelworld, Yatra, Trip.com… through **Channex** (white-label channel manager API).
+
+**What syncs**
+- NammaStay → OTAs: free beds/rooms per night, prices for each night (your seasonal & weekend rules included), minimum stays. Pushed within minutes of any change (bookings, blocks, maintenance, price rules) and fully once a day.
+- OTAs → NammaStay: new / changed / cancelled bookings, placed on a free bed/room of the mapped type with guest name, phone, email, amount, OTA reference ("Booking.com · 4417302981") and source "OTA". Each booking is acknowledged to Channex only after it is saved. If nothing is free (overbooking) or a guest is already checked in, the booking is listed with ⚠ and a notification.
+- Each NammaStay room + price group (e.g. "6-Bed Mixed Dorm · ₹700" = 3 beds) is one Channex room type (`dorm` for hostels) with one "Standard" rate plan in INR.
+
+**Set up the test account (free)**
+1. Sign up at **https://staging.channex.io** → Settings → **API keys** → create a key.
+2. Database: run `supabase/migrations/027_channex.sql`.
+3. Supabase → Edge Functions → Secrets: `CHANNEX_API_KEY=<staging key>`, `CHANNEX_URL=https://staging.channex.io` (CRON_SECRET already set).
+4. Deploy: GitHub Action (push the backend repo) or `supabase functions deploy channex --no-verify-jwt`.
+5. Every 5 minutes: edit and run `supabase/setup/channex_schedule.sql`.
+6. Hostel app → **OTA sync** → **Set up channel manager** (creates the property, room types, rate plans and sends 500 days of prices & availability) → **Connect your OTAs** (Channex's own screen inside NammaStay) → **Sync now**.
+7. Test bookings: in the staging dashboard create an **Open Channel** (or the Booking.com test account Channex provides), map the rooms, create a test booking → it appears in NammaStay after Sync now / within 5 minutes.
+
+**Going live:** sign the Channex WhiteLabel plan ($130/month + $7 per connected property), switch the secrets to the production URL and production key, and connect real OTA accounts. MakeMyTrip / Hostelworld connections are mapped and certified by Channex during onboarding. Keep iCal sync for anyone not on the channel manager.
+
+## 45. Legal pages + setup wizard (028)
+
+**Legal pages** (homepage site): `terms.html`, `privacy.html` (DPDP Act 2023: NammaStay is data fiduciary for owners' data and processor for guests' data; guests' data belongs to each property), `refund.html` (15-day trial; monthly not refundable once started; yearly full refund within 14 days; duplicates refunded; refunds in 7 working days). Linked from the homepage footer, sign-up ("I agree to the Terms and Privacy Policy") and guest online check-in. **Before launch:** fill in the Grievance Officer's name in `privacy.html` ([NAME]) and have a lawyer review all three. Razorpay asks for these pages when activating your account.
+
+**Setup wizard** — run `supabase/migrations/028_onboarding.sql`. New owners go from sign-up to `setup.html`: property details → rooms & beds (hostel: dorm lines with bed type and price; hotel: room types numbered 101…) → UPI ID → invite team → "You're ready" with first booking, OTA connection and pricing shortcuts. The dashboard shows a "Finish setting up" checklist until done (or hidden). Properties with bookings are marked as set up automatically.

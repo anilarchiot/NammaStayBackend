@@ -1,8 +1,8 @@
 -- =====================================================================
 -- NammaStay · SETUP_ALL.sql — the complete backend in one file
--- = 001 + 002 + 003 + 006 + 007 + 008 … 024 + 025_admin_growth
+-- = 001 + 002 + 003 + 006 + 007 + 008 … 027 + 028_onboarding
 -- Run once on a NEW Supabase project (SQL Editor → paste → Run).
--- Then run 004_seed.sql (your hostel + owner) and the optional schedules (005, ota, reminders).
+-- Then run 004_seed.sql (your hostel + owner) and the optional schedules (005, ota, reminders, channex).
 -- ALREADY LIVE? Don't re-run this — run only the newest migration(s) you haven't run yet.
 -- =====================================================================
 
@@ -5180,3 +5180,626 @@ revoke execute on function public.admin_health(), public.admin_revenue(), public
   public._admin_audit(), public.admin_actions_list(int, uuid), public.admin_lead_converted(uuid, uuid) from public, anon, authenticated;
 grant execute on function public.admin_health(), public.admin_revenue(), public.check_coupon(uuid, text, text), public.submit_subscription_payment(uuid, text, text, text),
   public.admin_coupons(), public.admin_save_coupon(jsonb), public.admin_actions_list(int, uuid), public.admin_lead_converted(uuid, uuid) to authenticated;
+
+
+-- >>>>>>>>>>>>>>>>>>>> 026_pricing_housekeeping.sql
+-- =====================================================================
+-- NammaStay · 026_pricing_housekeeping.sql
+--   1. Seasonal & weekend pricing — price rules per property:
+--        weekend (e.g. Fri + Sat nights +20%), season / dates
+--        (e.g. 20 Dec – 5 Jan +30%, or a fixed ₹1,200), optional rooms,
+--        optional minimum stay. Applied automatically when a booking is
+--        made or its dates / bed change; the stay's nightly rate becomes
+--        the average of its nights, so every total, invoice and discount
+--        stays consistent. Rates shown while booking include the rules.
+--   2. Housekeeping board — each bed/room is Clean / Dirty / Cleaning /
+--        Inspect; check-out marks it Dirty automatically.
+-- Run AFTER 025_admin_growth.sql.
+-- =====================================================================
+
+-- ---------------------------------------------------------------- 1. price rules
+create table if not exists public.rate_rules (
+  id          uuid primary key default gen_random_uuid(),
+  property_id uuid not null references public.properties(id) on delete cascade,
+  name        text not null check (char_length(btrim(name)) between 1 and 60),
+  kind        text not null check (kind in ('weekend','season')),
+  weekdays    smallint[] check (weekdays is null or weekdays <@ array[0,1,2,3,4,5,6]::smallint[]),   -- nights: 0 = Sunday … 6 = Saturday
+  date_from   date,
+  date_to     date,                                               -- last night included
+  adjust      text not null check (adjust in ('percent','amount','fixed')),
+  value       int  not null,                                      -- percent (-90…300) · ₹ in paise (+/-) · fixed price in paise
+  room_ids    uuid[],                                             -- null = all rooms
+  min_nights  smallint check (min_nights is null or min_nights between 2 and 30),
+  priority    smallint not null default 0,
+  is_active   boolean not null default true,
+  created_at  timestamptz not null default now(),
+  check (kind <> 'weekend' or (weekdays is not null and cardinality(weekdays) > 0)),
+  check (kind <> 'season' or (date_from is not null and date_to is not null and date_to >= date_from)),
+  check (adjust <> 'percent' or value between -90 and 300),
+  check (adjust <> 'fixed' or value > 0)
+);
+create index if not exists rate_rules_prop on public.rate_rules (property_id) where is_active;
+alter table public.rate_rules enable row level security;
+drop policy if exists rate_rules_select on public.rate_rules;
+create policy rate_rules_select on public.rate_rules for select to authenticated using (property_id in (select public.my_property_ids()));
+revoke all on public.rate_rules from anon, authenticated;
+grant select on public.rate_rules to authenticated;
+
+-- The price of one night (property local date) for a bed/room with base rate p_base
+create or replace function public._night_rate(p_property uuid, p_room uuid, p_base int, p_day date) returns int
+language sql stable security definer set search_path = public, pg_temp as $$
+  select greatest(0, coalesce((
+    select case r.adjust when 'percent' then round(p_base * (100 + r.value) / 100.0)::int when 'amount' then p_base + r.value else r.value end
+      from public.rate_rules r
+     where r.property_id = p_property and r.is_active and (r.room_ids is null or p_room = any (r.room_ids))
+       and ((r.kind = 'weekend' and extract(dow from p_day)::smallint = any (r.weekdays))
+         or (r.kind = 'season' and p_day between r.date_from and r.date_to
+             and (r.weekdays is null or extract(dow from p_day)::smallint = any (r.weekdays))))
+     order by (r.kind = 'season') desc, r.priority desc, r.created_at desc limit 1), p_base))
+$$;
+
+-- Average nightly rate for a stay (rounded to the paise) and the longest minimum-stay rule it touches
+create or replace function public._stay_rate(p_bed uuid, p_in timestamptz, p_out timestamptz, p_base int default null)
+returns table (rate_paise int, min_nights int, rule_names text)
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare bd public.beds%rowtype; tz text; d0 date; d1 date; n int; total bigint := 0; d date; base int;
+begin
+  select * into bd from public.beds where id = p_bed;
+  select timezone into tz from public.properties where id = bd.property_id;
+  base := coalesce(p_base, bd.rate_paise);
+  d0 := (p_in at time zone tz)::date; d1 := (p_out at time zone tz)::date;
+  if d1 <= d0 then d1 := d0 + 1; end if;
+  n := d1 - d0;
+  for d in select generate_series(d0, d1 - 1, interval '1 day')::date loop
+    total := total + public._night_rate(bd.property_id, bd.room_id, base, d);
+  end loop;
+  return query select round(total::numeric / n)::int,
+    coalesce((select max(r.min_nights) from public.rate_rules r
+               where r.property_id = bd.property_id and r.is_active and r.min_nights is not null
+                 and (r.room_ids is null or bd.room_id = any (r.room_ids))
+                 and ((r.kind = 'season' and r.date_from <= d1 - 1 and r.date_to >= d0)
+                   or (r.kind = 'weekend' and exists (select 1 from generate_series(d0, d1 - 1, interval '1 day') g
+                                                        where extract(dow from g)::smallint = any (r.weekdays))))), 0)::int,
+    (select string_agg(distinct r.name, ', ') from public.rate_rules r
+      where r.property_id = bd.property_id and r.is_active and (r.room_ids is null or bd.room_id = any (r.room_ids))
+        and exists (select 1 from generate_series(d0, d1 - 1, interval '1 day') g
+                     where (r.kind = 'weekend' and extract(dow from g)::smallint = any (r.weekdays))
+                        or (r.kind = 'season' and g::date between r.date_from and r.date_to)));
+end $$;
+
+-- Apply the rules to bookings (new bookings; date or bed changes)
+create or replace function public._apply_rate_rules() returns trigger
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare s record; base int;
+begin
+  if new.status not in ('pending','confirmed','checked_in') then return new; end if;
+  if not exists (select 1 from public.rate_rules where property_id = new.property_id and is_active) then return new; end if;
+  if tg_op = 'UPDATE' then
+    if (new.check_in_at, new.check_out_at, new.bed_id) is not distinct from (old.check_in_at, old.check_out_at, old.bed_id) then return new; end if;
+  end if;
+  select rate_paise into base from public.beds where id = new.bed_id;
+  select * into s from public._stay_rate(new.bed_id, new.check_in_at, new.check_out_at, base);
+  if tg_op = 'INSERT' and s.min_nights > 0 and new.nights < s.min_nights then
+    raise exception 'Minimum stay is % nights for these dates (%).', s.min_nights, s.rule_names;
+  end if;
+  if s.rate_paise is distinct from new.rate_paise then
+    new.rate_paise := s.rate_paise;
+    new.discount_paise := round(new.nights * (new.rate_paise + coalesce(new.extra_paise, 0)) * coalesce(new.discount_pct, 0) / 100.0);
+    new.total_paise := new.nights * (new.rate_paise + coalesce(new.extra_paise, 0)) - new.discount_paise + coalesce(new.charges_paise, 0);
+    if tg_op = 'UPDATE' and new.total_paise < new.paid_paise then
+      raise exception 'With the price rules for these dates the stay would cost less than what was already paid. Refund the difference first.';
+    end if;
+  end if;
+  return new;
+end $$;
+drop trigger if exists bookings_rate_rules on public.bookings;
+create trigger bookings_rate_rules before insert or update of check_in_at, check_out_at, bed_id on public.bookings
+  for each row execute function public._apply_rate_rules();
+
+-- Rooms shown while booking: price for these dates (rules included)
+create or replace function public.available_beds(p_property uuid, p_in timestamptz, p_out timestamptz)
+returns table (id uuid, label text, room_id uuid, room_name text, rate_paise int,
+               max_guests smallint, base_guests smallint, extra_guest_paise int)
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+#variable_conflict use_column
+begin
+  perform public._assert_role(p_property, array['owner','manager','front_desk']::public.member_role[]);
+  return query
+  select bd.id, bd.label, r.id, r.name, (select s.rate_paise from public._stay_rate(bd.id, p_in, p_out, bd.rate_paise) s),
+         bd.max_guests, bd.base_guests, bd.extra_guest_paise
+    from public.beds bd join public.rooms r on r.id = bd.room_id
+   where bd.property_id = p_property and bd.is_active
+     and not exists (select 1 from public.bookings b where b.bed_id = bd.id
+                      and b.status in ('pending','confirmed','checked_in')
+                      and b.stay && tstzrange(p_in, p_out, '[)'))
+     and not exists (select 1 from public.bed_blocks k where k.bed_id = bd.id
+                      and k.period && tstzrange(p_in, p_out, '[)'))
+   order by r.sort, r.name, bd.sort, bd.label;
+end $$;
+
+-- p: { id?, name, kind, weekdays[], date_from, date_to, adjust, value (percent number or rupees), room_ids[], min_nights, priority, is_active }
+create or replace function public.rate_rule_save(p_property uuid, p jsonb) returns uuid
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_id uuid; v_adj text := coalesce(p->>'adjust', 'percent'); v_val numeric := nullif(p->>'value', '')::numeric; v_kind text := coalesce(p->>'kind', 'weekend');
+  v_days smallint[] := case when jsonb_typeof(p->'weekdays') = 'array' and jsonb_array_length(p->'weekdays') > 0 then array(select (x)::smallint from jsonb_array_elements_text(p->'weekdays') x) end;
+  v_rooms uuid[] := case when jsonb_typeof(p->'room_ids') = 'array' and jsonb_array_length(p->'room_ids') > 0 then array(select (x)::uuid from jsonb_array_elements_text(p->'room_ids') x) end;
+begin
+  perform public._assert_role(p_property, array['owner','manager']::public.member_role[]);
+  perform public._require_perm(p_property, 'manage_rooms');
+  if v_val is null then raise exception 'Enter the price change.'; end if;
+  if v_kind = 'weekend' and v_days is null then raise exception 'Pick at least one night of the week.'; end if;
+  if v_kind = 'season' and (nullif(p->>'date_from', '') is null or nullif(p->>'date_to', '') is null) then raise exception 'Pick the first and last night.'; end if;
+  if v_rooms is not null and exists (select 1 from unnest(v_rooms) x where x not in (select id from public.rooms where property_id = p_property)) then raise exception 'Unknown room.'; end if;
+  v_val := case v_adj when 'percent' then round(v_val) else round(v_val * 100) end;      -- ₹ → paise
+  if nullif(p->>'id', '') is null then
+    insert into public.rate_rules (property_id, name, kind, weekdays, date_from, date_to, adjust, value, room_ids, min_nights, priority, is_active)
+    values (p_property, btrim(p->>'name'), v_kind, v_days, nullif(p->>'date_from', '')::date, nullif(p->>'date_to', '')::date, v_adj, v_val::int, v_rooms,
+            nullif(p->>'min_nights', '')::smallint, coalesce(nullif(p->>'priority', '')::smallint, 0), coalesce((p->>'is_active')::boolean, true))
+    returning id into v_id;
+  else
+    update public.rate_rules set name = btrim(p->>'name'), kind = v_kind, weekdays = v_days, date_from = nullif(p->>'date_from', '')::date,
+           date_to = nullif(p->>'date_to', '')::date, adjust = v_adj, value = v_val::int, room_ids = v_rooms, min_nights = nullif(p->>'min_nights', '')::smallint,
+           priority = coalesce(nullif(p->>'priority', '')::smallint, 0), is_active = coalesce((p->>'is_active')::boolean, true)
+     where id = (p->>'id')::uuid and property_id = p_property returning id into v_id;
+    if v_id is null then raise exception 'Price rule not found.'; end if;
+  end if;
+  return v_id;
+exception when check_violation then raise exception 'Check the price rule — percent between -90 and 300, a fixed price above ₹0, the last night after the first.';
+end $$;
+
+create or replace function public.rate_rule_delete(p_id uuid) returns void
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_prop uuid;
+begin
+  select property_id into v_prop from public.rate_rules where id = p_id;
+  if v_prop is null then raise exception 'Price rule not found.'; end if;
+  perform public._assert_role(v_prop, array['owner','manager']::public.member_role[]);
+  perform public._require_perm(v_prop, 'manage_rooms');
+  delete from public.rate_rules where id = p_id;
+end $$;
+
+-- Preview: what one bed/room costs per night for the next p_days nights
+create or replace function public.rate_preview(p_bed uuid, p_from date, p_days int default 14) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare bd public.beds%rowtype;
+begin
+  select * into bd from public.beds where id = p_bed;
+  if not found then raise exception 'Bed not found.'; end if;
+  perform public._assert_role(bd.property_id, array['owner','manager','front_desk']::public.member_role[]);
+  return (select jsonb_agg(jsonb_build_object('day', d::date, 'rate_paise', public._night_rate(bd.property_id, bd.room_id, bd.rate_paise, d::date)) order by d)
+            from generate_series(p_from, p_from + least(greatest(coalesce(p_days, 14), 1), 62) - 1, interval '1 day') d);
+end $$;
+
+-- ---------------------------------------------------------------- 2. housekeeping
+alter table public.beds
+  add column if not exists hk_status text not null default 'clean' check (hk_status in ('clean','dirty','cleaning','inspect')),
+  add column if not exists hk_note text check (char_length(hk_note) <= 200),
+  add column if not exists hk_updated_at timestamptz,
+  add column if not exists hk_by uuid;
+
+create or replace function public._hk_on_checkout() returns trigger
+language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  if new.status = 'checked_out' and old.status is distinct from 'checked_out' then
+    update public.beds set hk_status = 'dirty', hk_note = null, hk_updated_at = now(), hk_by = auth.uid() where id = new.bed_id;
+  end if;
+  return new;
+end $$;
+drop trigger if exists bookings_hk_checkout on public.bookings;
+create trigger bookings_hk_checkout after update of status on public.bookings for each row execute function public._hk_on_checkout();
+
+create or replace function public.hk_board(p_property uuid) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare tz text; today date;
+begin
+  perform public._assert_role(p_property, array['owner','manager','front_desk']::public.member_role[]);
+  select timezone into tz from public.properties where id = p_property;
+  today := (now() at time zone tz)::date;
+  return (select coalesce(jsonb_agg(jsonb_build_object(
+      'id', bd.id, 'label', bd.label, 'room', r.name, 'room_id', r.id, 'status', bd.hk_status, 'note', bd.hk_note, 'updated_at', bd.hk_updated_at,
+      'updated_by', (select coalesce(m.display_name, m.email) from public.property_members m where m.property_id = p_property and m.user_id = bd.hk_by),
+      'in_house', (select jsonb_build_object('guest', g.full_name, 'out', b.check_out_at, 'leaving_today', (b.check_out_at at time zone tz)::date = today)
+                     from public.bookings b join public.guests g on g.id = b.guest_id
+                    where b.bed_id = bd.id and b.status = 'checked_in' order by b.check_in_at desc limit 1),
+      'arriving', (select jsonb_build_object('guest', g.full_name, 'at', b.check_in_at)
+                     from public.bookings b join public.guests g on g.id = b.guest_id
+                    where b.bed_id = bd.id and b.status in ('pending','confirmed') and (b.check_in_at at time zone tz)::date = today
+                    order by b.check_in_at limit 1),
+      'blocked', exists (select 1 from public.bed_blocks k where k.bed_id = bd.id and k.period @> now()))
+    order by r.sort, r.name, bd.sort, bd.label), '[]'::jsonb)
+    from public.beds bd join public.rooms r on r.id = bd.room_id where bd.property_id = p_property and bd.is_active);
+end $$;
+
+create or replace function public.hk_set(p_bed uuid, p_status text, p_note text default null) returns void
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare v_prop uuid;
+begin
+  select property_id into v_prop from public.beds where id = p_bed;
+  if v_prop is null then raise exception 'Bed not found.'; end if;
+  perform public._assert_role(v_prop, array['owner','manager','front_desk']::public.member_role[]);
+  if p_status not in ('clean','dirty','cleaning','inspect') then raise exception 'Unknown status.'; end if;
+  update public.beds set hk_status = p_status, hk_note = nullif(left(btrim(coalesce(p_note, '')), 200), ''), hk_updated_at = now(), hk_by = auth.uid() where id = p_bed;
+end $$;
+
+create or replace function public.hk_counts(p_property uuid) returns jsonb
+language sql stable security definer set search_path = public, pg_temp as $$
+  select jsonb_build_object('dirty', count(*) filter (where hk_status = 'dirty'), 'cleaning', count(*) filter (where hk_status = 'cleaning'),
+                            'inspect', count(*) filter (where hk_status = 'inspect'))
+    from public.beds where property_id = p_property and is_active
+     and p_property in (select public.my_property_ids())
+$$;
+
+-- ---------------------------------------------------------------- permissions
+revoke execute on function public._night_rate(uuid, uuid, int, date), public._stay_rate(uuid, timestamptz, timestamptz, int), public._apply_rate_rules(),
+  public.rate_rule_save(uuid, jsonb), public.rate_rule_delete(uuid), public.rate_preview(uuid, date, int), public._hk_on_checkout(),
+  public.hk_board(uuid), public.hk_set(uuid, text, text), public.hk_counts(uuid) from public, anon, authenticated;
+grant execute on function public.rate_rule_save(uuid, jsonb), public.rate_rule_delete(uuid), public.rate_preview(uuid, date, int),
+  public.hk_board(uuid), public.hk_set(uuid, text, text), public.hk_counts(uuid) to authenticated;
+revoke execute on function public.available_beds(uuid, timestamptz, timestamptz) from public, anon;
+grant execute on function public.available_beds(uuid, timestamptz, timestamptz) to authenticated;
+
+
+-- >>>>>>>>>>>>>>>>>>>> 027_channex.sql
+-- =====================================================================
+-- NammaStay · 027_channex.sql — two-way channel manager (Channex)
+--   NammaStay → OTAs : availability (free beds/rooms per night), prices
+--                      (incl. seasonal & weekend rules) and minimum stays
+--   OTAs → NammaStay : bookings (new / modified / cancelled) with guest
+--                      name, phone, email, amount and OTA reference
+-- Through Channex (white-label channel manager API): Booking.com, Agoda,
+-- Expedia, Airbnb, MakeMyTrip/Goibibo, Hostelworld, Yatra, Trip.com…
+-- Each NammaStay room + price group (e.g. "6-Bed Dorm · ₹700" = 3 beds)
+-- becomes one Channex room type (dorm for hostels) with one rate plan.
+-- The `channex` edge function does the talking (secrets CHANNEX_API_KEY,
+-- CHANNEX_URL = https://staging.channex.io while testing).
+-- Run AFTER 026_pricing_housekeeping.sql.
+-- =====================================================================
+
+create table if not exists public.channex_links (
+  property_id     uuid primary key references public.properties(id) on delete cascade,
+  cx_property_id  text,
+  enabled         boolean not null default true,
+  dirty_at        timestamptz not null default now(),
+  last_push_at    timestamptz,
+  last_pull_at    timestamptz,
+  last_error      text check (char_length(last_error) <= 500),
+  created_at      timestamptz not null default now()
+);
+create table if not exists public.channex_room_map (
+  property_id      uuid not null references public.properties(id) on delete cascade,
+  group_key        text not null,                  -- room_id:rate_paise
+  room_id          uuid not null,
+  rate_paise       int  not null,
+  title            text not null,
+  bed_ids          uuid[] not null,
+  cx_room_type_id  text,
+  cx_rate_plan_id  text,
+  primary key (property_id, group_key)
+);
+create table if not exists public.channex_bookings (
+  cx_booking_id   text primary key,
+  property_id     uuid not null references public.properties(id) on delete cascade,
+  unique_id       text,
+  ota_name        text,
+  ota_code        text,
+  status          text,
+  revision_id     text,
+  booking_ids     uuid[] not null default '{}',
+  amount          numeric(12,2),
+  currency        text,
+  arrival         date,
+  departure       date,
+  guest_name      text,
+  problem         text check (char_length(problem) <= 300),
+  raw             jsonb,
+  received_at     timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
+);
+create index if not exists channex_bookings_prop on public.channex_bookings (property_id, received_at desc);
+
+alter table public.channex_links enable row level security;
+alter table public.channex_room_map enable row level security;
+alter table public.channex_bookings enable row level security;
+revoke all on public.channex_links, public.channex_room_map, public.channex_bookings from anon, authenticated;
+
+-- ---------------------------------------------------------------- price rules must not touch OTA prices
+create or replace function public._apply_rate_rules() returns trigger
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare s record; base int;
+begin
+  if coalesce(current_setting('nammastay.skip_rate_rules', true), '') = '1' then return new; end if;   -- OTA bookings keep the OTA price
+  if new.status not in ('pending','confirmed','checked_in') then return new; end if;
+  if not exists (select 1 from public.rate_rules where property_id = new.property_id and is_active) then return new; end if;
+  if tg_op = 'UPDATE' then
+    if (new.check_in_at, new.check_out_at, new.bed_id) is not distinct from (old.check_in_at, old.check_out_at, old.bed_id) then return new; end if;
+    if old.source = 'ota' then return new; end if;
+  end if;
+  select rate_paise into base from public.beds where id = new.bed_id;
+  select * into s from public._stay_rate(new.bed_id, new.check_in_at, new.check_out_at, base);
+  if tg_op = 'INSERT' and s.min_nights > 0 and new.nights < s.min_nights then
+    raise exception 'Minimum stay is % nights for these dates (%).', s.min_nights, s.rule_names;
+  end if;
+  if s.rate_paise is distinct from new.rate_paise then
+    new.rate_paise := s.rate_paise;
+    new.discount_paise := round(new.nights * (new.rate_paise + coalesce(new.extra_paise, 0)) * coalesce(new.discount_pct, 0) / 100.0);
+    new.total_paise := new.nights * (new.rate_paise + coalesce(new.extra_paise, 0)) - new.discount_paise + coalesce(new.charges_paise, 0);
+    if tg_op = 'UPDATE' and new.total_paise < new.paid_paise then
+      raise exception 'With the price rules for these dates the stay would cost less than what was already paid. Refund the difference first.';
+    end if;
+  end if;
+  return new;
+end $$;
+
+-- ---------------------------------------------------------------- "something changed — push to Channex"
+create or replace function public._cx_touch() returns trigger
+language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  update public.channex_links set dirty_at = now()
+   where property_id = coalesce(new.property_id, old.property_id) and enabled;
+  return coalesce(new, old);
+end $$;
+do $$ declare t text; begin
+  foreach t in array array['bookings','bed_blocks','rate_rules','beds'] loop
+    execute format('drop trigger if exists cx_touch on public.%I', t);
+    execute format('create trigger cx_touch after insert or update or delete on public.%I for each row execute function public._cx_touch()', t);
+  end loop;
+end $$;
+
+-- ---------------------------------------------------------------- groups (room + price) → Channex room types
+create or replace function public.cx_groups(p_property uuid) returns jsonb
+language sql stable security definer set search_path = public, pg_temp as $$
+  select coalesce(jsonb_agg(g order by g->>'sort', g->>'title'), '[]'::jsonb) from (
+    select jsonb_build_object(
+      'group_key', r.id || ':' || bd.rate_paise, 'room_id', r.id, 'rate_paise', bd.rate_paise,
+      'title', r.name || case when (select count(distinct b2.rate_paise) from public.beds b2 where b2.room_id = r.id and b2.is_active) > 1
+                              then ' · ₹' || to_char(bd.rate_paise / 100.0, 'FM99,99,990') else '' end,
+      'bed_ids', jsonb_agg(bd.id order by bd.sort, bd.label), 'count', count(*),
+      'room_kind', case when p.kind = 'hostel' then 'dorm' else 'room' end,
+      'capacity', (select count(*) from public.beds b3 where b3.room_id = r.id and b3.is_active),
+      'occ_adults', greatest(1, max(coalesce(bd.max_guests, 1))), 'default_occupancy', greatest(1, max(coalesce(bd.base_guests, 1))),
+      'sort', lpad(r.sort::text, 5, '0')) g
+    from public.beds bd join public.rooms r on r.id = bd.room_id join public.properties p on p.id = bd.property_id
+   where bd.property_id = p_property and bd.is_active
+   group by r.id, r.name, r.sort, bd.rate_paise, p.kind) x
+$$;
+
+-- Availability, price and minimum stay per mapped group and night (for pushing to Channex)
+create or replace function public.cx_ari(p_property uuid, p_days int default 365) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare p public.properties%rowtype; d0 date;
+begin
+  select * into p from public.properties where id = p_property;
+  d0 := (now() at time zone p.timezone)::date;
+  return (select coalesce(jsonb_agg(jsonb_build_object('room_type_id', m.cx_room_type_id, 'rate_plan_id', m.cx_rate_plan_id, 'date', d::date,
+      'availability', (select count(*) from unnest(m.bed_ids) bid
+                        where exists (select 1 from public.beds b where b.id = bid and b.is_active)
+                          and not exists (select 1 from public.bookings k where k.bed_id = bid and k.status in ('pending','confirmed','checked_in')
+                                           and k.stay && tstzrange(((d::date)::timestamp + p.checkin_time) at time zone p.timezone,
+                                                                   ((d::date + 1)::timestamp + p.checkout_time) at time zone p.timezone, '[)'))
+                          and not exists (select 1 from public.bed_blocks z where z.bed_id = bid
+                                           and z.period && tstzrange(((d::date)::timestamp + p.checkin_time) at time zone p.timezone,
+                                                                     ((d::date + 1)::timestamp + p.checkout_time) at time zone p.timezone, '[)'))),
+      'rate', public._night_rate(p_property, m.room_id, m.rate_paise, d::date),
+      'min_stay', greatest(1, coalesce((select max(r.min_nights) from public.rate_rules r
+                    where r.property_id = p_property and r.is_active and r.min_nights is not null and (r.room_ids is null or m.room_id = any (r.room_ids))
+                      and ((r.kind = 'season' and d::date between r.date_from and r.date_to)
+                        or (r.kind = 'weekend' and extract(dow from d)::smallint = any (r.weekdays)))), 1)))
+      order by m.group_key, d), '[]'::jsonb)
+    from public.channex_room_map m cross join generate_series(d0, d0 + least(greatest(coalesce(p_days, 365), 1), 500) - 1, interval '1 day') d
+   where m.property_id = p_property and m.cx_room_type_id is not null and m.cx_rate_plan_id is not null);
+end $$;
+
+-- ---------------------------------------------------------------- OTA booking → NammaStay
+-- p_rev: a Channex booking revision (attributes). Idempotent per revision.
+create or replace function public.cx_import(p_property uuid, p_rev jsonb) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  p public.properties%rowtype; v_cx text := coalesce(p_rev->>'booking_id', p_rev->>'id'); v_status text := p_rev->>'status';
+  v_row public.channex_bookings%rowtype; v_ids uuid[] := '{}'; v_problem text; rm jsonb; m public.channex_room_map%rowtype;
+  v_in timestamptz; v_out timestamptz; v_n int; v_bed uuid; v_guest uuid; v_total int; v_rate int; v_bk uuid; v_name text; v_phone text; v_mail text;
+  v_ota text := coalesce(nullif(p_rev->>'secondary_ota', ''), p_rev->>'ota_name', 'OTA'); v_code text := p_rev->>'ota_reservation_code'; k record; v_note text;
+begin
+  select * into p from public.properties where id = p_property;
+  select * into v_row from public.channex_bookings where cx_booking_id = v_cx for update;
+  if found and v_row.revision_id = coalesce(p_rev->>'revision_id', p_rev->>'id') then return jsonb_build_object('duplicate', true); end if;
+
+  -- cancel / replace earlier NammaStay bookings of this OTA booking
+  if found and v_status in ('cancelled','modified') then
+    for k in select * from public.bookings where id = any (v_row.booking_ids) loop
+      if k.status in ('pending','confirmed') then
+        update public.bookings set status = 'cancelled', cancelled_at = now(), note = left(concat_ws(E'\n', note, v_ota || ' ' || v_status), 2000) where id = k.id;
+      elsif k.status = 'checked_in' then
+        v_problem := format('%s %s booking %s, but the guest is already checked in — please adjust by hand.', v_ota, v_status, v_code);
+        v_ids := v_ids || k.id;
+      end if;
+    end loop;
+  end if;
+
+  if v_status in ('new','modified') and v_problem is null then
+    v_name := nullif(btrim(concat_ws(' ', p_rev->'customer'->>'name', p_rev->'customer'->>'surname')), '');
+    if v_name is null or char_length(v_name) < 2 then v_name := v_ota || ' guest ' || coalesce(v_code, ''); end if;
+    v_phone := regexp_replace(coalesce(p_rev->'customer'->>'phone', ''), '[^0-9+]', '', 'g');
+    if v_phone !~ '^\+?[0-9]{8,15}$' then v_phone := null; end if;
+    v_mail := nullif(btrim(coalesce(p_rev->'customer'->>'mail', '')), '');
+    if v_mail is not null and v_mail !~* '^[^@\s]+@[^@\s]+\.[^@\s]+$' then v_mail := null; end if;
+    select id into v_guest from public.guests where property_id = p_property
+       and ((v_mail is not null and lower(email) = lower(v_mail)) or (v_phone is not null and phone = v_phone)) order by created_at limit 1;
+    if v_guest is null then
+      insert into public.guests (property_id, full_name, phone, email, nationality)
+      values (p_property, left(v_name, 120), v_phone, v_mail, nullif(p_rev->'customer'->>'country', '')) returning id into v_guest;
+    end if;
+    perform set_config('nammastay.skip_rate_rules', '1', true);
+    for rm in select * from jsonb_array_elements(coalesce(p_rev->'rooms', '[]'::jsonb)) loop
+      continue when coalesce((rm->>'is_cancelled')::boolean, false);
+      select * into m from public.channex_room_map where property_id = p_property and cx_room_type_id = rm->>'room_type_id';
+      if not found then v_problem := format('%s booking %s: room not mapped in NammaStay.', v_ota, v_code); continue; end if;
+      v_in := ((rm->>'checkin_date')::date::timestamp + p.checkin_time) at time zone p.timezone;
+      v_out := ((rm->>'checkout_date')::date::timestamp + p.checkout_time) at time zone p.timezone;
+      v_n := greatest(1, (rm->>'checkout_date')::date - (rm->>'checkin_date')::date);
+      select bid into v_bed from unnest(m.bed_ids) with ordinality u(bid, ord)
+       where exists (select 1 from public.beds b where b.id = bid and b.is_active)
+         and not exists (select 1 from public.bookings x where x.bed_id = bid and x.status in ('pending','confirmed','checked_in') and x.stay && tstzrange(v_in, v_out, '[)'))
+         and not exists (select 1 from public.bed_blocks z where z.bed_id = bid and z.period && tstzrange(v_in, v_out, '[)'))
+       order by ord limit 1;
+      if v_bed is null then
+        v_problem := format('%s booking %s (%s → %s): no free %s in %s — possible overbooking, please move a guest.',
+                            v_ota, v_code, rm->>'checkin_date', rm->>'checkout_date', case when p.kind = 'hostel' then 'bed' else 'room' end, m.title);
+        continue;
+      end if;
+      v_total := round(coalesce(nullif(rm->>'amount', '')::numeric, nullif(p_rev->>'amount', '')::numeric, 0) * 100);
+      v_rate := round(v_total::numeric / v_n);
+      v_note := left(concat_ws(E'\n', format('%s · %s', v_ota, v_code),
+                  case when p_rev->>'payment_collect' = 'ota' then 'Paid to ' || v_ota || ' (collect nothing at the desk unless told otherwise)' end,
+                  case when coalesce(p_rev->>'currency', 'INR') <> 'INR' then 'Amount in ' || (p_rev->>'currency') end,
+                  nullif(p_rev->>'notes', '')), 2000);
+      begin
+        insert into public.bookings (property_id, guest_id, bed_id, visitors, check_in_at, check_out_at, nights, rate_paise, total_paise, status, source, note, created_by)
+        values (p_property, v_guest, v_bed, least(greatest(coalesce((rm->'occupancy'->>'adults')::int, 1), 1), 20), v_in, v_out, v_n, v_rate, v_rate * v_n,
+                'confirmed', 'ota', v_note, null)
+        returning id into v_bk;
+        v_ids := v_ids || v_bk;
+      exception when exclusion_violation then
+        v_problem := format('%s booking %s: the %s was just taken — please place it by hand.', v_ota, v_code, case when p.kind = 'hostel' then 'bed' else 'room' end);
+      end;
+    end loop;
+    perform set_config('nammastay.skip_rate_rules', '', true);
+  end if;
+
+  insert into public.channex_bookings as c (cx_booking_id, property_id, unique_id, ota_name, ota_code, status, revision_id, booking_ids, amount, currency,
+       arrival, departure, guest_name, problem, raw, updated_at)
+  values (v_cx, p_property, p_rev->>'unique_id', v_ota, v_code, v_status, coalesce(p_rev->>'revision_id', p_rev->>'id'), v_ids,
+          nullif(p_rev->>'amount', '')::numeric, p_rev->>'currency', nullif(p_rev->>'arrival_date', '')::date, nullif(p_rev->>'departure_date', '')::date,
+          v_name, v_problem, p_rev - 'guarantee', now())
+  on conflict (cx_booking_id) do update set status = excluded.status, revision_id = excluded.revision_id, booking_ids = excluded.booking_ids,
+     amount = excluded.amount, arrival = excluded.arrival, departure = excluded.departure, guest_name = coalesce(excluded.guest_name, c.guest_name),
+     problem = excluded.problem, raw = excluded.raw, updated_at = now();
+
+  insert into public.notifications (property_id, kind, title, body, booking_id)
+  values (p_property, case when v_problem is not null then 'ota_clash' else 'booking' end,
+          case when v_problem is not null then '⚠ ' || v_ota || ' booking needs attention'
+               when v_status = 'cancelled' then v_ota || ' booking cancelled' when v_status = 'modified' then v_ota || ' booking changed'
+               else 'New ' || v_ota || ' booking' end,
+          coalesce(v_problem, format('%s · %s → %s · %s', coalesce(v_name, v_row.guest_name, ''), p_rev->>'arrival_date', p_rev->>'departure_date', v_code)),
+          v_ids[1]);
+  return jsonb_build_object('booking_ids', v_ids, 'problem', v_problem);
+end $$;
+
+-- ---------------------------------------------------------------- server helpers (edge function, service role)
+create or replace function public.cx_setup_data(p_property uuid) returns jsonb
+language sql stable security definer set search_path = public, pg_temp as $$
+  select jsonb_build_object('property', jsonb_build_object('id', p.id, 'name', p.name, 'kind', p.kind, 'email', p.email, 'phone', p.phone,
+           'address', p.address, 'city', p.city, 'timezone', p.timezone),
+         'link', (select to_jsonb(l) from public.channex_links l where l.property_id = p.id),
+         'maps', (select coalesce(jsonb_agg(to_jsonb(m)), '[]'::jsonb) from public.channex_room_map m where m.property_id = p.id),
+         'groups', public.cx_groups(p.id))
+    from public.properties p where p.id = p_property
+$$;
+
+create or replace function public.cx_save_setup(p_property uuid, p_cx_property text, p_maps jsonb) returns void
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare g jsonb;
+begin
+  insert into public.channex_links (property_id, cx_property_id, enabled, dirty_at) values (p_property, p_cx_property, true, now())
+  on conflict (property_id) do update set cx_property_id = excluded.cx_property_id, enabled = true, dirty_at = now(), last_error = null;
+  for g in select * from jsonb_array_elements(coalesce(p_maps, '[]'::jsonb)) loop
+    insert into public.channex_room_map (property_id, group_key, room_id, rate_paise, title, bed_ids, cx_room_type_id, cx_rate_plan_id)
+    values (p_property, g->>'group_key', (g->>'room_id')::uuid, (g->>'rate_paise')::int, g->>'title',
+            array(select (x)::uuid from jsonb_array_elements_text(g->'bed_ids') x), g->>'cx_room_type_id', g->>'cx_rate_plan_id')
+    on conflict (property_id, group_key) do update set title = excluded.title, bed_ids = excluded.bed_ids,
+       cx_room_type_id = coalesce(excluded.cx_room_type_id, public.channex_room_map.cx_room_type_id),
+       cx_rate_plan_id = coalesce(excluded.cx_rate_plan_id, public.channex_room_map.cx_rate_plan_id);
+  end loop;
+end $$;
+
+create or replace function public.cx_mark(p_property uuid, p_kind text, p_error text default null) returns void
+language sql security definer set search_path = public, pg_temp as $$
+  update public.channex_links set
+    last_push_at = case when p_kind = 'push' and p_error is null then now() else last_push_at end,
+    last_pull_at = case when p_kind = 'pull' and p_error is null then now() else last_pull_at end,
+    last_error = left(p_error, 500)
+  where property_id = p_property
+$$;
+
+create or replace function public.cx_links_due() returns jsonb
+language sql stable security definer set search_path = public, pg_temp as $$
+  select coalesce(jsonb_agg(jsonb_build_object('property_id', l.property_id, 'cx_property_id', l.cx_property_id,
+           'push', l.last_push_at is null or l.dirty_at > l.last_push_at or l.last_push_at < now() - interval '1 day')), '[]'::jsonb)
+    from public.channex_links l
+   where l.enabled and l.cx_property_id is not null and public._access_state(l.property_id) not in ('expired','suspended')
+$$;
+
+create or replace function public.cx_property_for(p_cx_property text) returns uuid
+language sql stable security definer set search_path = public, pg_temp as $$
+  select property_id from public.channex_links where cx_property_id = p_cx_property and enabled limit 1
+$$;
+
+-- ---------------------------------------------------------------- staff (owner / manager)
+create or replace function public.cx_status(p_property uuid) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+begin
+  perform public._assert_role(p_property, array['owner','manager']::public.member_role[]);
+  return jsonb_build_object(
+    'link', (select to_jsonb(l) from public.channex_links l where l.property_id = p_property),
+    'maps', (select coalesce(jsonb_agg(jsonb_build_object('group_key', m.group_key, 'title', m.title, 'rate_paise', m.rate_paise, 'beds', cardinality(m.bed_ids),
+               'cx_room_type_id', m.cx_room_type_id, 'cx_rate_plan_id', m.cx_rate_plan_id) order by m.title), '[]'::jsonb)
+             from public.channex_room_map m where m.property_id = p_property),
+    'groups', public.cx_groups(p_property),
+    'bookings', (select coalesce(jsonb_agg(jsonb_build_object('cx_booking_id', c.cx_booking_id, 'ota', c.ota_name, 'code', c.ota_code, 'status', c.status,
+               'guest', c.guest_name, 'arrival', c.arrival, 'departure', c.departure, 'amount', c.amount, 'currency', c.currency, 'problem', c.problem,
+               'booking_ids', c.booking_ids, 'received_at', c.received_at) order by c.received_at desc), '[]'::jsonb)
+             from (select * from public.channex_bookings where property_id = p_property order by received_at desc limit 30) c));
+end $$;
+
+create or replace function public.cx_set_enabled(p_property uuid, p_enabled boolean) returns void
+language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  perform public._assert_role(p_property, array['owner']::public.member_role[]);
+  update public.channex_links set enabled = p_enabled, dirty_at = now() where property_id = p_property;
+end $$;
+
+-- ---------------------------------------------------------------- permissions
+revoke execute on function public._cx_touch(), public.cx_groups(uuid), public.cx_ari(uuid, int), public.cx_import(uuid, jsonb), public.cx_setup_data(uuid),
+  public.cx_save_setup(uuid, text, jsonb), public.cx_mark(uuid, text, text), public.cx_links_due(), public.cx_property_for(text),
+  public.cx_status(uuid), public.cx_set_enabled(uuid, boolean) from public, anon, authenticated;
+grant execute on function public.cx_status(uuid), public.cx_set_enabled(uuid, boolean) to authenticated;
+grant execute on function public.cx_groups(uuid), public.cx_ari(uuid, int), public.cx_import(uuid, jsonb), public.cx_setup_data(uuid),
+  public.cx_save_setup(uuid, text, jsonb), public.cx_mark(uuid, text, text), public.cx_links_due(), public.cx_property_for(text) to service_role;
+
+
+-- >>>>>>>>>>>>>>>>>>>> 028_onboarding.sql
+-- =====================================================================
+-- NammaStay · 028_onboarding.sql — first-time setup wizard
+-- New owners are guided through: property details → rooms & beds →
+-- UPI payments → staff → first booking. The dashboard shows a setup
+-- checklist until it's finished (or hidden).
+-- Run AFTER 027_channex.sql.
+-- =====================================================================
+alter table public.properties add column if not exists setup_done_at timestamptz;
+-- properties that already have bookings are clearly set up — don't show them the wizard
+update public.properties p set setup_done_at = now()
+ where setup_done_at is null and exists (select 1 from public.bookings b where b.property_id = p.id);
+
+create or replace function public.setup_progress(p_property uuid) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $$
+declare p public.properties%rowtype;
+begin
+  perform public._assert_role(p_property, array['owner','manager']::public.member_role[]);
+  select * into p from public.properties where id = p_property;
+  return jsonb_build_object(
+    'done_at', p.setup_done_at,
+    'details', p.phone is not null and p.address is not null and p.city is not null,
+    'rooms', exists (select 1 from public.beds where property_id = p_property and is_active),
+    'upi', p.upi_id is not null,
+    'staff', (select count(*) from public.property_members where property_id = p_property) > 1,
+    'booking', exists (select 1 from public.bookings where property_id = p_property));
+end $$;
+
+create or replace function public.setup_finish(p_property uuid, p_done boolean default true) returns void
+language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  perform public._assert_role(p_property, array['owner','manager']::public.member_role[]);
+  update public.properties set setup_done_at = case when p_done then coalesce(setup_done_at, now()) end where id = p_property;
+end $$;
+
+revoke execute on function public.setup_progress(uuid), public.setup_finish(uuid, boolean) from public, anon, authenticated;
+grant execute on function public.setup_progress(uuid), public.setup_finish(uuid, boolean) to authenticated;

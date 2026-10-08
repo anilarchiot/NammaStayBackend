@@ -35,6 +35,11 @@ The website lives in the separate frontend repo (**NammaStayFrontend**, served b
 | `supabase/setup/undo_guest_app.sql` | Only if you ran the earlier 024_guest_app.sql — removes the guest app |
 | `supabase/migrations/024_form_c.sql` | Form C: passport/visa details, deadlines, FRRO numbers |
 | `supabase/migrations/025_admin_growth.sql` | Admin: customer health, revenue, coupons, activity log, lead → property |
+| `supabase/migrations/026_pricing_housekeeping.sql` | Seasonal & weekend price rules; housekeeping status per bed/room |
+| `supabase/migrations/027_channex.sql` | Two-way channel manager: room mapping, OTA bookings, availability & prices out |
+| `supabase/functions/channex` | Talks to Channex: setup, push prices/availability, pull & acknowledge OTA bookings |
+| `supabase/setup/channex_schedule.sql` | Channel manager every 5 minutes |
+| `supabase/migrations/028_onboarding.sql` | Setup wizard progress for new owners |
 | `supabase/functions/billing-reminders` | Daily: creates reminders, emails owners (Resend) |
 | `supabase/setup/reminders_schedule.sql` | Runs billing reminders every morning |
 | `supabase/functions/razorpay` | Creates payment links, checks status, receives Razorpay webhooks |
