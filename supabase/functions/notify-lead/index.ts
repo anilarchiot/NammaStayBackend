@@ -8,7 +8,7 @@
 const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY") ?? "";
 const MAIL_FROM = Deno.env.get("MAIL_FROM") ?? "NammaStay <hello@thenammastay.com>";
 const SITE_URL = (Deno.env.get("MARKETING_URL") ?? "https://thenammastay.com").replace(/\/$/, "");   // the homepage
-const ADMIN_URL = (Deno.env.get("ADMIN_URL") ?? "https://admin.thenammastay.com").replace(/\/$/, "");
+const ADMIN_URL = (Deno.env.get("ADMIN_URL") ?? "https://thenammastay.com").replace(/\/$/, "");   // admin pages are on the same site
 const SECRET = Deno.env.get("WEBHOOK_SECRET") ?? "";
 const NOTIFY = Deno.env.get("LEADS_NOTIFY_EMAIL") ?? "";
 
