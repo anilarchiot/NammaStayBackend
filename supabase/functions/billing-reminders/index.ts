@@ -9,7 +9,7 @@ const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE
 const SECRET = Deno.env.get("CRON_SECRET") ?? "";
 const RESEND = Deno.env.get("RESEND_API_KEY") ?? "";
 const FROM = Deno.env.get("MAIL_FROM") ?? "NammaStay <onboarding@resend.dev>";
-const SITE = (Deno.env.get("APP_URL") ?? "https://app.thenammastay.com").replace(/\/$/, "");   // the hostel app
+const SITE = (Deno.env.get("APP_URL") ?? "https://thenammastay.com").replace(/\/$/, "");   // the website (app pages live at /login.html etc.)
 const esc = (s: string) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 
 type R = { id: string; kind: string; property: string; email: string; name: string; text: { title: string; body: string } };

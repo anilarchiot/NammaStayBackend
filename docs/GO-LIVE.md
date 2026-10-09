@@ -68,7 +68,7 @@ Supabase → **SQL Editor** → New query. Paste and **Run** each file, in order
 17. `supabase/migrations/019_prices_oct_2026.sql` — new subscription prices
 18. `supabase/migrations/020_ota_sync.sql` — OTA calendar sync (iCal)
 19. `supabase/migrations/021_expenses_paylinks.sql` — expenses & profit, Razorpay payment links
-20. `supabase/migrations/022_admin_2fa.sql` — 2-step login for the admin website
+20. `supabase/migrations/022_admin_2fa.sql` — 2-step login for the admin pages
 21. `supabase/migrations/023_platform_invoices_reminders.sql` — GST invoices for subscriptions + billing reminders
 22. `supabase/migrations/024_form_c.sql` — Form C for foreign guests
 23. `supabase/migrations/025_admin_growth.sql` — admin: health, revenue, coupons, activity log, lead → property
@@ -149,7 +149,7 @@ Also open **Advisors → Security Advisor** and **Performance Advisor** in Supab
    WEBHOOK_SECRET=$(openssl rand -hex 24); CRON_SECRET=$(openssl rand -hex 24)
    echo "$WEBHOOK_SECRET  $CRON_SECRET"      # save both in your password manager
    supabase secrets set RESEND_API_KEY=re_xxx MAIL_FROM="Social Backpackers <bookings@thenammastay.in>" \
-     WEBHOOK_SECRET=$WEBHOOK_SECRET CRON_SECRET=$CRON_SECRET APP_URL=https://app.thenammastay.com
+     WEBHOOK_SECRET=$WEBHOOK_SECRET CRON_SECRET=$CRON_SECRET APP_URL=https://thenammastay.com
    supabase functions deploy notify-booking --no-verify-jwt
    supabase functions deploy purge-id-docs  --no-verify-jwt
    ```
@@ -468,25 +468,22 @@ Existing paid-until dates stay; the new price applies at the next payment. Chang
 4. Booking → **💳 Payment link** → amount → Create → Copy / **Send on WhatsApp**. When the guest pays, the payment is recorded automatically ("Paid online — Razorpay payment link"); without a webhook, NammaStay checks whenever the booking is opened.
 Start with test keys (rzp_test_…) and Razorpay's test payment methods, then switch to live keys.
 
-## 37. Admin website — admin.thenammastay.com (022)
+## 37. Admin pages inside the hostel app (022)
 
-The admin screens (Overview, Subscribers, Leads) are now a **separate website** in their own GitHub repo
-(`nammastay-admin-site.zip`). The hostel app no longer contains them; its old links (`/admin.html`,
-`/subscribers.html`, `/leads.html`, `/admin-login.html`) redirect to the admin website.
+NammaStay admins see a **NAMMASTAY ADMIN** section at the bottom of the hostel app menu — Overview,
+Subscribers, Revenue & coupons, Leads, Activity log — and open them directly, no second sign-in.
+Owners and staff never see it (the database checks `is_platform_admin()` on every admin action).
+Make someone an admin with `3_admin_access.sql`.
 
-Admins sign in with **password + a 6-digit code** from an authenticator app (set up on first sign-in by
-scanning a QR code). After setup, the database refuses every admin action unless that sign-in used the code.
-
-Setup: run `022_admin_2fa.sql`; Supabase → Authentication → MFA → TOTP on; add
-`https://admin.thenammastay.com/**` to Redirect URLs; new GitHub repo + Pages; GoDaddy CNAME `admin` →
-`anilarchiot.github.io`; Enforce HTTPS. Step-by-step: README.md in the admin site.
-Lost phone: `delete from auth.mfa_factors where user_id = (select id from auth.users where lower(email) = lower('admin@…'));`
+Optional extra safety: `thenammastay.com/admin-login.html` lets an admin set up a 6-digit authenticator code.
+Once set up, the database asks for that code once per sign-in before admin pages open.
+To go back to no code: `delete from auth.mfa_factors where user_id = (select id from auth.users where lower(email) = lower('admin@…'));`
 
 ## 38. Subscription GST invoices + billing reminders (023)
 
 **Database:** run `supabase/migrations/023_platform_invoices_reminders.sql`.
 
-**Invoices (NammaStay → property)** — admin website → Subscribers → **Invoice settings**: legal name, your GSTIN (optional), address, state, SAC, GST %, prefix → Save → **Create invoices for past payments** (once). From then on every approved subscription payment gets an invoice automatically (NS/2026-27/0001…). Prices include GST; customer in your state → CGST + SGST, other state → IGST (by their GSTIN or chosen state). Owners: Settings → Billing → **Billing details** (name, GSTIN, address, state) and **Your invoices** (view / PDF / share). Admin: each property's payments show their invoice. Confirm SAC/rate with your CA.
+**Invoices (NammaStay → property)** — Admin → Subscribers → **Invoice settings**: legal name, your GSTIN (optional), address, state, SAC, GST %, prefix → Save → **Create invoices for past payments** (once). From then on every approved subscription payment gets an invoice automatically (NS/2026-27/0001…). Prices include GST; customer in your state → CGST + SGST, other state → IGST (by their GSTIN or chosen state). Owners: Settings → Billing → **Billing details** (name, GSTIN, address, state) and **Your invoices** (view / PDF / share). Admin: each property's payments show their invoice. Confirm SAC/rate with your CA.
 
 **Reminders** — trial ending in 3 days / 1 day / ended, renewal in 7 days / 1 day / ended:
 - In-app notification to the owner (always), email (if Resend is set up), and a **Reminders to follow up** card on the admin Overview with one-tap **WhatsApp** + **Done**.
@@ -507,38 +504,35 @@ Every foreign guest must be reported to FRRO on Form C within 24 hours of arriva
 
 ## 41. Admin: customer health, revenue & coupons, activity log, lead → property (025)
 
-**Database:** run `supabase/migrations/025_admin_growth.sql`. **Admin website:** upload the new admin-site zip (new pages `revenue.html`, `activity.html`).
+**Database:** run `supabase/migrations/025_admin_growth.sql`. **Website:** upload `nammastay-website.zip` (new pages `revenue.html`, `activity.html`).
 
 - **Customer health** (Overview, and each property's page): setup checklist — rooms, UPI, staff, first booking, first payment, regular use — and a 0–100 score (setup 40 + bookings in 14 days 30 + active days in 7 days 30). Lowest first: call the at-risk ones.
 - **Revenue & coupons:** MRR (yearly plans ÷ 12), ARR, collected this month, paying vs trial, trial → paid in 90 days, ended in 30 days, 12-month chart, plan mix. **Coupons:** % or ₹ off, optional plans, max uses and expiry; owners enter the code in Settings → Billing; uses count when you approve the payment; the coupon shows on the pending payment.
 - **Activity log:** every change made by an admin — payments approved/rejected, subscriptions extended/suspended/made free, prices, settings, properties, coupons, leads, admins — with before → after values.
 - **Lead → property:** Leads → a lead → **Create property from this lead** opens Add property pre-filled; the lead is marked Won and linked.
 
-## 42. Three websites: homepage, hostel app, admin
+## 42. One website: thenammastay.com
 
-| Website | Address | GitHub repo | Zip |
-|---|---|---|---|
-| Homepage (marketing) | thenammastay.com | NammaStayFrontend (existing) | `nammastay-marketing-site.zip` |
-| Hostel app | **app.thenammastay.com** | **NammaStayApp** (new) | `nammastay-hostel-app.zip` |
-| Admin | admin.thenammastay.com | NammaStayAdmin | `nammastay-admin-site.zip` |
+Everything — homepage, hostel app, admin and legal pages — is **one GitHub repo (NammaStayFrontend), one
+domain**. Upload `nammastay-website.zip`.
 
-All three use the **same Supabase project** — paste the same Project URL + anon key into each repo's `assets/js/config.js`.
+| Page | Address |
+|---|---|
+| Homepage | thenammastay.com |
+| Sign in → hostel app | thenammastay.com/login.html (homepage **Sign in** button) |
+| Free trial → setup wizard | thenammastay.com/signup.html |
+| Admin (2-step code) | thenammastay.com/admin-login.html ("NammaStay admin login →" on the sign-in page) |
+| Terms / Privacy / Refunds | thenammastay.com/terms.html · privacy.html · refund.html |
 
-**Set up the hostel app (once):**
-1. GitHub → New repository **NammaStayApp** → upload `nammastay-hostel-app.zip` contents (keep `CNAME`) → edit `assets/js/config.js` (keys).
-2. Settings → Pages → Deploy from branch main / root → Custom domain `app.thenammastay.com`.
-3. GoDaddy → DNS → Add **CNAME**: Name `app`, Value `anilarchiot.github.io`.
-4. GitHub Pages → wait for "DNS check successful" → **Enforce HTTPS**.
-5. Supabase → Authentication → URL Configuration: **Site URL** `https://app.thenammastay.com`; **Redirect URLs** add `https://app.thenammastay.com/**` (keep the others).
-6. Supabase → Edge Functions → Secrets: remove `SITE_URL` if you set it; optional `APP_URL=https://app.thenammastay.com` (that's the default anyway).
-
-**Then the homepage repo (NammaStayFrontend):** delete the old app files and upload `nammastay-marketing-site.zip` contents (keep your `config.js`). It contains the homepage plus small redirect pages, so old links — guests' check-in links, bookmarks like thenammastay.com/login.html — open on app.thenammastay.com automatically.
-
-**Admin repo:** upload `nammastay-admin-site.zip` (keep your `config.js`, but check `siteUrl` is now `https://app.thenammastay.com`).
+**Moving back from three sites (if you set them up):**
+1. NammaStayFrontend repo → delete the old files → upload `nammastay-website.zip` contents (keep `CNAME` = `thenammastay.com`) → paste your keys into `assets/js/config.js`.
+2. Supabase → Authentication → URL Configuration: **Site URL** `https://thenammastay.com`; **Redirect URLs** `https://thenammastay.com/**` (remove the app./admin. ones).
+3. Supabase → Edge Functions → Secrets: delete `APP_URL`, `MARKETING_URL`, `ADMIN_URL` if you set them (defaults are now thenammastay.com). Redeploy functions (push the backend repo).
+4. GoDaddy → DNS: delete the `app` and `admin` CNAME records. Archive/delete the NammaStayApp and NammaStayAdmin repos.
 
 ## 43. Seasonal & weekend pricing + housekeeping (026)
 
-**Database:** run `supabase/migrations/026_pricing_housekeeping.sql`. **Hostel app:** upload the new app zip.
+**Database:** run `supabase/migrations/026_pricing_housekeeping.sql`. **Website:** upload `nammastay-website.zip`.
 
 **Pricing** — Settings → Room types & pricing → **Seasonal & weekend pricing**:
 - **Every week** (e.g. Fri & Sat nights +20%) or **Dates / season** (e.g. 20 Dec – 5 Jan +30%, optionally only some nights of the week).

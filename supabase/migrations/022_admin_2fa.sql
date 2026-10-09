@@ -1,6 +1,6 @@
 -- =====================================================================
 -- NammaStay · 022_admin_2fa.sql
--- The admin website (admin.thenammastay.com) uses 2-step login: password
+-- The admin website (thenammastay.com/admin-login.html) uses 2-step login: password
 -- + a 6-digit code from an authenticator app (Google Authenticator,
 -- Microsoft Authenticator, Authy…). Supabase calls this MFA / TOTP.
 -- Once an admin has set up their authenticator, every admin action
