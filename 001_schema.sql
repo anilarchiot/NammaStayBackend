@@ -34,7 +34,7 @@ create table public.properties (
   city          text check (char_length(city) <= 80),
   phone         text check (char_length(phone) <= 20),
   email         text check (email is null or email ~* '^[^@\s]+@[^@\s]+\.[^@\s]+$'),
-  upi_id        text check (upi_id is null or upi_id ~ '^[A-Za-z0-9._-]{2,256}@[A-Za-z]{2,64}$'),
+  upi_id        text check (upi_id is null or upi_id ~ '^[A-Za-z0-9._-]{2,255}@[A-Za-z]{2,64}$'),
   timezone      text not null default 'Asia/Kolkata',
   checkin_time  time not null default '14:00',
   checkout_time time not null default '11:00',
