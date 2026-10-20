@@ -3,20 +3,29 @@
 //   POST {action:"sync",  property_id}                   owner/manager → pull OTA bookings + push availability & prices now
 //   POST {action:"iframe", property_id}                  owner/manager → link to Channex's "connect OTAs" screen (shown inside NammaStay)
 //   POST {} + header x-cron-secret                        every few minutes: pull bookings for all, push where something changed
-// Secrets: CHANNEX_API_KEY, CHANNEX_URL (default https://staging.channex.io), CRON_SECRET.
+//   POST {action:"key_test"}                             NammaStay admin → check the saved Channex key works (044)
+// Channex key: saved by a NammaStay admin in Admin → Channel manager (044, table cx_settings);
+//   if none is saved, the secrets CHANNEX_API_KEY / CHANNEX_URL are used (default https://staging.channex.io). Also CRON_SECRET.
 // Deploy: supabase functions deploy channex --no-verify-jwt
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const URL_ = Deno.env.get("SUPABASE_URL")!;
 const admin = createClient(URL_, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
-const CX = (Deno.env.get("CHANNEX_URL") ?? "https://staging.channex.io").replace(/\/$/, "");
-const KEY = Deno.env.get("CHANNEX_API_KEY") ?? "";
+const ENV_CX = (Deno.env.get("CHANNEX_URL") ?? "https://staging.channex.io").replace(/\/$/, "");
+const ENV_KEY = Deno.env.get("CHANNEX_API_KEY") ?? "";
+let CX = ENV_CX; let KEY = ENV_KEY;
+// Key saved from the admin screen (044) wins over the secrets; read fresh on every request.
+async function loadKey() {
+  CX = ENV_CX; KEY = ENV_KEY;
+  const { data, error } = await admin.rpc("_cx_key");
+  if (!error && data?.api_key) { KEY = String(data.api_key); CX = String(data.base_url || ENV_CX).replace(/\/$/, ""); }
+}
 const SECRET = Deno.env.get("CRON_SECRET") ?? "";
 const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type", "Access-Control-Allow-Methods": "POST, OPTIONS" };
 const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 
 async function cx(path: string, init: RequestInit = {}) {
-  if (!KEY) throw new Error("Channex isn’t set up on the server yet (CHANNEX_API_KEY secret missing).");
+  if (!KEY) throw new Error("Channex isn’t switched on yet — a NammaStay admin adds the API key in Admin → Channel manager.");
   const r = await fetch(CX + "/api/v1" + path, { ...init, headers: { "Content-Type": "application/json", "user-api-key": KEY, ...(init.headers ?? {}) } });
   const body = await r.json().catch(() => ({}));
   if (!r.ok) {
@@ -115,6 +124,7 @@ async function pull(cxProp?: string) {
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
+  await loadKey();
   // -------- cron
   if (SECRET && req.headers.get("x-cron-secret") === SECRET) {
     const out: unknown[] = [];
@@ -132,6 +142,14 @@ Deno.serve(async (req) => {
   if (!auth.startsWith("Bearer ")) return json({ error: "Please sign in." }, 401);
   const user = createClient(URL_, Deno.env.get("SUPABASE_ANON_KEY")!, { global: { headers: { Authorization: auth } } });
   const body = await req.json().catch(() => ({}));
+  if (body.action === "key_test") {                                                    // NammaStay admins only (044)
+    const { data: isAdmin } = await user.rpc("is_platform_admin");
+    if (isAdmin !== true) return json({ error: "Only NammaStay admins can do this." }, 403);
+    try {
+      const r = await cx("/properties?pagination[page]=1&pagination[limit]=100");
+      return json({ ok: true, live: CX.includes("app.channex.io"), properties: (r.data || []).map((p: { id: string; attributes?: { title?: string } }) => ({ id: p.id, title: p.attributes?.title || "" })) });
+    } catch (e) { return json({ error: e instanceof Error ? e.message : String(e) }, 400); }
+  }
   const { error: roleErr } = await user.rpc("cx_status", { p_property: body.property_id });     // owner / manager only
   if (roleErr) return json({ error: roleErr.message }, 403);
   try {
