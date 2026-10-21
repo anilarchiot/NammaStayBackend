@@ -50,6 +50,190 @@ The root-level SETUP_ALL.sql files are old bundles and do not contain the
 current schema. Use supabase/migrations/ as the current SQL source of truth.
 Do not apply this guide's table list as SQL.
 
+WHICH SQL TO RUN NOW
+--------------------
+For an existing Supabase project, run this checker first:
+
+  supabase/setup/checks/4_check_which_updates_to_run.sql
+
+It returns one row per update. For each required row where done = false, run
+the correspondingly numbered supabase/migrations/NNN_*.sql file, in ascending
+order. Skip rows marked true. Do not run the whole migration directory again
+on a live database. The optional migrations are:
+
+  038_booking_page.sql - only if using the public direct-booking page.
+  042_staff.sql        - only if using staff scheduling/payroll.
+
+For the recent frontend/database alignment, check these in particular:
+
+  029_public_api.sql through 034_resort.sql - newer public API, booking guest,
+      PG, homestay, and resort functionality.
+  035_fix_upi_check.sql - required if the checker reports false; fixes UPI
+      validation, it does not create tables.
+  036_investment.sql through 037_business_health.sql - owner tools and health.
+  039_my_business.sql through 041_smart_pricing.sql - business tools/pricing.
+  043_branches.sql - branch management functions (branches are properties).
+  044_channex_key.sql - Channex key setting and functions.
+  045_public_property_count.sql - public count function used by login/signup.
+
+Then run supabase/tests/01_security_checks.sql. For a brand-new project, follow
+the migration ordering in HOW TO APPLY SQL above, then the setup steps in
+docs/GO-LIVE.md. Run 004_seed.sql only if you intentionally want the sample
+property; schedules and secrets are separate setup steps.
+
+PAGE-TO-DATABASE MAP
+-------------------
+The UI usually reads/writes through named database RPC functions. The tables
+below are the underlying records; use the page's controls/RPCs for changes.
+These are mappings, not permission to edit protected tables directly.
+
+Public marketing homepage (index.html)
+  leads; plans (public prices). Calls submit_lead and reads plans.
+Login and admin login
+  Supabase Auth handles credentials; admin authorization uses platform_admins.
+  Do not edit Auth users or password records with SQL.
+Signup
+  properties, property_members, subscriptions; optionally pg_properties or
+  resort_properties as a property type is selected.
+Dashboard
+  properties, rooms, beds, bookings, payments, notifications, subscriptions,
+  bed_blocks and rate_rules; summary values are returned by RPCs.
+Bookings list
+  bookings, guests, beds, rooms, payments; list/status/count data use RPCs.
+Calendar
+  bookings, guests, beds, rooms, bed_blocks; PG mode also uses tenancies,
+  rent_dues and related PG records.
+Rooms
+  rooms, beds, bed_blocks, bookings; price rules use rate_rules.
+Booking detail
+  bookings, guests, beds, rooms, payments, booking_charges, extra_items,
+  invoices, payment_links, form_c and optional booking_guests.
+Payments
+  payments and bookings; use the payments screen for ledger entries.
+Guest profiles
+  guests and bookings, with optional booking_guests and guest_foreign details.
+Check-in
+  bookings, guests, beds, rooms; ID documents use the private guest-ids
+  Storage bucket, not ordinary SQL table columns for file contents.
+Form C
+  form_c, guest_foreign, guests, bookings.
+Housekeeping
+  room/bed inventory and housekeeping status; uses rooms/beds and RPCs.
+Setup wizard
+  properties, rooms, beds, property_members.
+Expenses
+  expenses; reports may also summarize payments, rent_payments, and
+  resort_payments.
+My Business / Investment
+  investment_settings, investments, legal_documents, legal_checklist,
+  business_profile, business_loans, business_partners, partner_payouts,
+  business_lease, business_reminders.
+Business Health
+  business_health_snapshots; reads bookings, beds, payments, expenses and
+  installed optional PG/resort/investment records.
+Tenants & Rent
+  pg_properties, tenancies, rent_dues, rent_payments, guests, beds, bookings.
+PG Dashboard
+  pg_properties, tenancies, rent_dues, rent_payments, beds and bookings.
+PG Payments
+  rent_payments, rent_dues, tenancies.
+PG Report
+  PG tenancy/rent tables, plus booking/payment summaries as returned by RPC.
+Activities
+  activities, activity_bookings, bookings and guests.
+Day Visitors
+  dayout_packages, day_visits, resort_payments.
+Groups
+  booking_groups, booking_group_members, bookings, guests and payments.
+Homestay
+  meal_plans, booking_meals, property_guide, bookings.
+Resort
+  resort_properties, resort_settings, activities, dayout_packages, day_visits,
+  resort_payments, stay_packages, booking_packages, booking_groups,
+  booking_group_members, booking_extra_beds, activity_bookings.
+OTA Sync
+  ota_feeds, beds, bed_blocks, bookings; Channex sync also uses
+  channex_links, channex_room_map and channex_bookings.
+Channel Manager settings
+  cx_settings, channex_links, channex_room_map, channex_bookings.
+Reports and Revenue
+  bookings, beds, payments, expenses, subscriptions and plans; PG/resort
+  records are included when applicable.
+Settings
+  properties, property_members, rooms, beds, extra_items, rate_rules,
+  notifications, plans, subscriptions, subscription_payments, property_secrets,
+  api_keys and billing settings, via RPCs.
+Branches
+  properties, property_members, subscriptions, rooms, beds; there is no
+  separate branches table.
+Smart Pricing
+  smart_price_settings, smart_price_limits, smart_price_dates,
+  smart_price_nights, smart_price_rules, smart_price_runs and rate_rules.
+Staff (optional)
+  staff_settings, staff_shifts, staff_members, staff_roster, staff_attendance,
+  staff_leave, staff_advances, staff_payslips, staff_qr_tries.
+Public Booking Page (optional)
+  booking_pages, booking_requests, stay_reviews, bookings, guests, beds and
+  rooms.
+Platform Leads / Activity
+  leads, platform_admins and admin_actions.
+Platform Admin / Subscribers / Revenue
+  properties, subscriptions, subscription_payments, plans, platform_invoices,
+  billing_reminders, coupons, leads and admin_actions.
+Company (platform admin only)
+  company_profile, company_founders, company_investments, company_costs,
+  company_income, company_renewals, company_health_snapshots.
+Self Check-in (public token page)
+  bookings, guests and booking_guests; guest guide and PG information are
+  read through limited RPC functions.
+
+SAFE SQL REFERENCE (TEMPLATES ONLY)
+-----------------------------------
+The website/RPC is the recommended way to create, edit, or delete business
+records. The following are generic PostgreSQL shapes for an administrator
+working in a DEVELOPMENT database. Replace every <placeholder> with actual
+schema names/columns and validated values. Do not run a placeholder query as
+written, and do not use direct SQL to bypass RLS or business rules.
+
+Read/preview rows:
+  select id, property_id
+    from public.<table_name>
+   where id = '<known-row-uuid>';
+
+Create a row (only for a table whose required columns/defaults you understand):
+  insert into public.<table_name> (<column_a>, <column_b>)
+  values ('<value_a>', '<value_b>')
+  returning id;
+
+Edit a row (always target one known primary key; preview it first):
+  update public.<table_name>
+     set <editable_column> = '<new_value>'
+   where id = '<known-row-uuid>'
+  returning id;
+
+Delete a row (destructive; inspect first and use only the app-supported flow):
+  delete from public.<table_name>
+   where id = '<known-row-uuid>'
+  returning id;
+
+For tables without an id column, use that table's actual primary key, for
+example property_members uses (property_id, user_id), and some ledger tables
+are intentionally append-only. Never issue UPDATE/DELETE without a precise
+primary-key WHERE clause. Do not manually delete a parent row to cascade-delete
+bookings, guests, payments, invoices, documents, or audit records.
+
+For a schema change (ALTER TABLE), do not alter the live table ad hoc. Add a
+new numbered migration, test it on staging, back up production, then apply it
+once through SQL Editor. Example of an additive nullable column migration:
+
+  alter table public.<table_name>
+    add column if not exists <new_column> text;
+
+Before using ALTER/DROP/DELETE on production, make sure you know how the
+frontend, RPC functions, RLS policies, indexes, triggers, and reports depend
+on the affected column/table. DROP COLUMN, DROP TABLE, TRUNCATE, and broad
+DELETE statements can permanently break the app or destroy guest history.
+
 TABLE CATALOG
 -------------
 
