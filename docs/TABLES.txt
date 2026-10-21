@@ -1,0 +1,620 @@
+NAMMASTAY DATABASE TABLES - OPERATOR GUIDE
+==========================================
+
+Purpose
+-------
+This guide covers the 97 application tables created by the numbered SQL files
+in supabase/migrations/. It explains what each table stores and how to work
+with it safely. It is not a replacement for the SQL migration files or a
+column-by-column data dictionary.
+
+IMPORTANT SAFETY RULES
+---------------------
+1. Do not create, rename, truncate, or manually edit application tables in
+   Supabase Table Editor. Use the NammaStay website for normal changes.
+2. The website calls database functions (RPCs) for protected operations.
+   These functions enforce property membership, roles, permissions,
+   subscriptions, validation, and booking rules. Direct table edits can bypass
+   these rules or leave related records inconsistent.
+3. Most business data belongs to a property. Never move a row to another
+   property by changing property_id. The database uses property-scoped
+   relationships and security policies.
+4. Money fields ending in _paise are integer paise, not rupees.
+   Example: Rs 700.00 is stored as 70000. Do not divide or multiply stored
+   values when using the NammaStay screens.
+5. Guest identification, staff documents, credentials, and payment secrets
+   are sensitive. Do not export or share them unnecessarily. Storage buckets
+   and Supabase Auth are managed separately from the tables listed here.
+6. An SQL migration is not a data-entry script. Never re-run an older setup
+   bundle or a migration on a live project just to "make sure"; check first.
+
+HOW TO APPLY SQL
+---------------
+Existing Supabase project:
+  a. Run supabase/setup/checks/4_check_which_updates_to_run.sql in SQL Editor.
+  b. For each false result, run the matching numbered file from
+     supabase/migrations/, in ascending numeric order.
+  c. 038_booking_page.sql and 042_staff.sql are optional features. Run them
+     only if you intend to use those features.
+  d. Run supabase/tests/01_security_checks.sql after the updates.
+
+New Supabase project:
+  a. Run the numbered migration files in ascending order. Migration numbers
+     004 and 005 are reserved for setup tasks and are not in migrations/.
+     Migration 038 (booking page) and 042 (staff) may be skipped if unused.
+  b. Follow docs/GO-LIVE.md for creating the first Auth user, running the
+     property seed, configuring secrets, and optional schedules.
+  c. Run the security checks before entering real guest data.
+
+The root-level SETUP_ALL.sql files are old bundles and do not contain the
+current schema. Use supabase/migrations/ as the current SQL source of truth.
+Do not apply this guide's table list as SQL.
+
+TABLE CATALOG
+-------------
+
+CORE PROPERTY, ROOM, GUEST AND BOOKING DATA
+-------------------------------------------
+
+properties
+  Migration: 001_schema.sql; later migrations add property settings.
+  Stores each hostel, hotel, homestay, PG, or resort as a property record.
+  Update details in Settings or the relevant property screen, not by changing
+  its ID or kind directly.
+
+property_members
+  Migration: 001_schema.sql.
+  Links Supabase Auth users to properties and stores their roles and access.
+  Invite/remove staff and change roles through the team controls. Do not
+  manually add a member to grant access.
+
+rooms
+  Migration: 001_schema.sql.
+  Stores the room or dorm/room-type group belonging to a property.
+  Create, rename, and sort rooms from Rooms & Beds. Check for bookings before
+  removing a room; use the app's delete flow.
+
+beds
+  Migration: 001_schema.sql; 014 adds guest-capacity fields.
+  Stores bookable units (beds for hostels, rooms/units for other property
+  types), their labels, rates, status, and capacity.
+  Manage units and rates from Rooms & Beds. Do not reuse/delete a unit with
+  booking history unless the app permits the operation.
+
+bed_blocks
+  Migration: 001_schema.sql; 020 adds OTA-feed linkage.
+  Holds a unit out of service for maintenance or an imported OTA calendar
+  block. Add/remove blocks from the calendar or OTA screens, not SQL. Overlap
+  constraints help prevent conflicting blocks.
+
+guests
+  Migration: 001_schema.sql; 009, 010, and 024 add guest/profile fields.
+  Stores a property's guest profile and limited identity-document metadata.
+  Add/edit/delete guests through guest and booking screens. Identity documents
+  are sensitive; do not put full Aadhaar numbers in notes.
+
+bookings
+  Migration: 001_schema.sql; later migrations add booking features.
+  Main reservation record: guest, unit, dates, totals, status, source, and
+  check-in details. Create, edit, cancel, check in, and check out only through
+  the booking/calendar screens and their RPCs. The database prevents
+  overlapping reservations.
+
+payments
+  Migration: 001_schema.sql.
+  Append-only ledger of guest payments and refunds attached to bookings.
+  Record money from the booking screen. Never edit or delete a payment row;
+  correct a mistake with the supported refund/correction flow.
+
+notifications
+  Migration: 001_schema.sql.
+  In-app reminders and activity notices for users/property workflows.
+  The app and scheduled functions manage these records; do not use them as a
+  general notes table.
+
+audit_log
+  Migration: 001_schema.sql.
+  Security/audit trail of important property actions. Treat as read-only.
+  Do not delete entries to hide a change.
+
+PLATFORM ADMIN, LEADS AND SUBSCRIPTIONS
+---------------------------------------
+
+platform_admins
+  Migration: 006_marketing.sql.
+  Allow-list of accounts permitted to use NammaStay platform-admin screens.
+  Only an existing platform administrator should grant/revoke this access
+  using the documented admin setup process.
+
+leads
+  Migration: 006_marketing.sql.
+  Contact requests submitted through the public marketing site.
+  Review and update lead status in the Leads admin screen.
+
+platform_settings
+  Migration: 007_subscriptions.sql.
+  Single platform-wide billing/settings row: trial/grace periods, support
+  details, and the platform's subscription-payment instructions. Configure
+  in admin billing settings. Never place a service-role credential here.
+
+plans
+  Migration: 007_subscriptions.sql; 015 and 019 add plan types/pricing.
+  Publicly readable subscription plan catalogue and prices.
+  Maintain plans in the admin billing screen. Price values are in paise.
+
+subscriptions
+  Migration: 007_subscriptions.sql; 011 adds suspension fields.
+  One subscription/access-state record per property. Admin screens and
+  subscription functions manage trial, paid, complimentary, grace, and
+  suspended states. Do not manually extend access by editing dates.
+
+subscription_payments
+  Migration: 007_subscriptions.sql.
+  Owner-submitted subscription payment claims and admin review results.
+  Submit UTRs from Billing and approve/reject them from admin billing.
+
+property_invites
+  Migration: 013_admin_add_property.sql.
+  Invitation/link records used when an admin provisions a property for an
+  owner who may sign up later. Use the admin property workflow.
+
+EXTRAS, INVOICES, EXPENSES AND PAYMENT LINKS
+--------------------------------------------
+
+extra_items
+  Migration: 016_extras.sql.
+  A property's reusable catalogue of add-ons such as food or laundry.
+  Maintain the catalogue in Settings/Extras; charges for an actual stay are
+  recorded separately.
+
+booking_charges
+  Migration: 016_extras.sql.
+  Extra item quantities and charges attached to a booking. Add/remove them
+  through the booking detail screen so totals and invoices stay consistent.
+
+invoice_counters
+  Migration: 018_invoice_offers.sql.
+  Per-property sequence/counter used to issue unique guest invoice numbers.
+  Internal bookkeeping only; never reset or edit the counter manually.
+
+invoices
+  Migration: 018_invoice_offers.sql.
+  Guest invoices/receipts associated with bookings and property billing
+  details. Create and view them from the booking/invoice screens.
+
+expenses
+  Migration: 021_expenses_paylinks.sql.
+  Property operating expenses used in profit and reporting calculations.
+  Add or correct expenses from Expenses & Profit; enter dates and amounts
+  carefully because reports aggregate this table.
+
+property_secrets
+  Migration: 021_expenses_paylinks.sql.
+  Encrypted/restricted property integration credentials, including payment
+  provider secrets. Manage them only through the relevant settings screen.
+  Never query, export, or expose secret values in the frontend.
+
+payment_links
+  Migration: 021_expenses_paylinks.sql.
+  Online payment-link records and provider state associated with guest
+  bookings. Create/check links from booking detail; webhook/function code
+  updates payment status.
+
+Form C AND FOREIGN GUEST INFORMATION
+------------------------------------
+
+guest_foreign
+  Migration: 024_form_c.sql.
+  Foreign guest passport, visa, and arrival/departure details for compliance.
+  Enter and maintain this information in Form C screens. Restrict exports and
+  sharing to authorized staff.
+
+form_c
+  Migration: 024_form_c.sql.
+  Form C submission/status records linked to a booking/guest. Manage through
+  Form C workflows; do not edit submission state directly in Table Editor.
+
+PLATFORM BILLING AND ADMIN GROWTH
+---------------------------------
+
+platform_invoice_counters
+  Migration: 023_platform_invoices_reminders.sql.
+  Internal sequence for NammaStay subscription invoices. Do not reset it.
+
+platform_invoices
+  Migration: 023_platform_invoices_reminders.sql.
+  Invoices issued by NammaStay to subscribing properties. Manage from the
+  platform billing/admin tools.
+
+billing_reminders
+  Migration: 023_platform_invoices_reminders.sql.
+  Scheduled reminder state/history for trials, renewals, or invoices.
+  Generated by billing reminder functions; do not create fake reminders.
+
+coupons
+  Migration: 025_admin_growth.sql.
+  Admin-managed subscription discount codes and their limits/validity.
+  Create, activate, or disable coupons through platform admin tools.
+
+admin_actions
+  Migration: 025_admin_growth.sql.
+  Audit records of platform-admin actions. Treat as read-only.
+
+PRICING AND OTA / CHANNEL MANAGER
+---------------------------------
+
+rate_rules
+  Migration: 026_pricing_housekeeping.sql.
+  Seasonal, weekend, or date-based price rules for a property's rooms/units.
+  Manage from pricing settings. Smart pricing also writes its own rules here;
+  do not alter those generated rows directly.
+
+ota_feeds
+  Migration: 020_ota_sync.sql.
+  External iCalendar feed configuration and sync state for a property's
+  bookable units. Manage feeds from OTA Sync. Keep private feed URLs secret.
+
+channex_links
+  Migration: 027_channex.sql.
+  Property-level Channex connection and enablement state. Set up or pause
+  from the OTA/channel manager screen.
+
+channex_room_map
+  Migration: 027_channex.sql.
+  Maps NammaStay room/unit groups to Channex room/rate-plan identifiers.
+  Maintain through the channel manager's mapping/setup tools.
+
+channex_bookings
+  Migration: 027_channex.sql.
+  Imported/external booking identities and sync status used to reconcile
+  Channex bookings with NammaStay. Do not manually change sync status.
+
+cx_settings
+  Migration: 044_channex_key.sql.
+  Single platform-level Channex API key and endpoint setting, protected from
+  direct user access. Configure from the authorized admin channel-manager
+  screen; the stored API key is not intended to be readable by the browser.
+
+PUBLIC API
+----------
+
+api_keys
+  Migration: 029_public_api.sql.
+  Property API key metadata, scopes, and a one-way hash of each key. Create
+  and revoke keys in Settings > API keys. The full key is shown once; store
+  it securely. Never add a key to public frontend source code.
+
+api_requests
+  Migration: 029_public_api.sql.
+  Short-lived API rate-limit/request tracking records. Managed automatically
+  by the API functions.
+
+api_idempotency
+  Migration: 029_public_api.sql.
+  Stores responses for idempotent API booking requests so retries do not
+  create duplicate bookings. Managed automatically by the API functions.
+
+ADDITIONAL BOOKING GUESTS
+-------------------------
+
+booking_guests
+  Migration: 030_booking_guests.sql.
+  Additional named guests attached to a booking, beyond the primary guest.
+  Add and edit them from booking guest details. Handle identity details as
+  sensitive data.
+
+booking_guest_doc_trash
+  Migration: 030_booking_guests.sql.
+  Temporary/deletion-tracking records for additional guest ID documents.
+  Used by secure cleanup logic; do not use as a document archive.
+
+PG / CO-LIVING TENANCIES AND RENT
+---------------------------------
+
+pg_properties
+  Migration: 031_pg_tenants.sql.
+  PG/co-living mode and property-specific configuration. Enable/manage PG
+  mode from the PG settings/dashboard controls.
+
+tenancies
+  Migration: 031_pg_tenants.sql.
+  Tenant stay agreements, unit assignment, rent/deposit terms, and move-in/
+  move-out state. Use the Tenants screen for lifecycle changes.
+
+rent_dues
+  Migration: 031_pg_tenants.sql.
+  Scheduled rent obligations and balance/credit tracking for a tenancy.
+  Generated and adjusted through PG rent workflows, not direct edits.
+
+rent_payments
+  Migration: 031_pg_tenants.sql.
+  Rent receipts/refunds linked to PG tenancies and dues. Record payments
+  using the PG payments screen. Preserve the payment ledger.
+
+HOMESTAY MEALS AND GUEST GUIDE
+------------------------------
+
+meal_plans
+  Migration: 033_homestay.sql.
+  Reusable homestay meal-plan definitions. Create and edit in the Meals
+  screen.
+
+booking_meals
+  Migration: 033_homestay.sql.
+  The meal plan selected for a booking and its booking-specific state.
+  Assign/change it through booking or meal workflows.
+
+property_guide
+  Migration: 033_homestay.sql.
+  Property guest-guide content and related settings. Maintain through the
+  Homestay guide screen; public guest access is via a limited token function.
+
+RESORT, DAY VISITS, GROUPS AND ACTIVITIES
+-----------------------------------------
+
+resort_properties
+  Migration: 034_resort.sql.
+  Resort-specific enablement/configuration associated with a property.
+  Manage resort mode from the Resort screens.
+
+resort_settings
+  Migration: 034_resort.sql.
+  Resort operational settings and defaults. Change through Resort settings.
+
+activities
+  Migration: 034_resort.sql.
+  Resort activities/services offered to guests. Maintain from the Activities
+  screen.
+
+dayout_packages
+  Migration: 034_resort.sql.
+  Configurable day-out package definitions and prices. Maintain in Day Out
+  package settings.
+
+day_visits
+  Migration: 034_resort.sql.
+  Day visitor reservations/records, including visitor details and status.
+  Create and update from the Day Visitors workflow.
+
+resort_payments
+  Migration: 034_resort.sql.
+  Payments/refunds for resort/day-visitor activity. Record through the
+  Resort payment screens and retain ledger history.
+
+stay_packages
+  Migration: 034_resort.sql.
+  Resort accommodation/package definitions. Maintain in Stay Packages.
+
+booking_packages
+  Migration: 034_resort.sql.
+  Package selection and booking-specific package details. Manage from the
+  relevant booking screen.
+
+booking_groups
+  Migration: 034_resort.sql.
+  Group booking header/details. Create and manage using the Groups screen.
+
+booking_group_members
+  Migration: 034_resort.sql.
+  Individual booking/member links belonging to a group booking. Managed by
+  the Groups workflow.
+
+booking_extra_beds
+  Migration: 034_resort.sql.
+  Extra-bed allocations and charges associated with a resort booking. Manage
+  through booking detail.
+
+activity_bookings
+  Migration: 034_resort.sql.
+  Reservations of resort activities by guests/bookings. Create, change, and
+  cancel from the Activities workflow.
+
+OWNER INVESTMENT, COMPLIANCE AND BUSINESS HEALTH
+------------------------------------------------
+
+investment_settings
+  Migration: 036_investment.sql.
+  Property owner's opening date and settings for investment/payback and
+  licence checklist calculations. Maintain in My Investment.
+
+investments
+  Migration: 036_investment.sql; 039 may add partner linkage.
+  Owner-entered capital invested in the property. Add/correct entries in My
+  Investment. Amounts use paise.
+
+legal_documents
+  Migration: 036_investment.sql.
+  Owner compliance/licence documents and expiry metadata. Manage in My
+  Investment > Documents. Uploaded files use a private storage bucket.
+
+legal_checklist
+  Migration: 036_investment.sql.
+  Owner's completed/not-needed compliance checklist items. Update through
+  the licence checklist, not by changing checklist keys manually.
+
+business_health_snapshots
+  Migration: 037_business_health.sql.
+  Periodic business-health scores and area summaries. Generated by the
+  Business Health feature; not a source for manual data entry.
+
+PUBLIC BOOKING PAGE AND REVIEWS (OPTIONAL)
+-----------------------------------------
+
+booking_pages
+  Migration: 038_booking_page.sql.
+  Public booking page settings, slug, policies, photos, and enablement.
+  Configure in the Booking Page screen. Photos use a separate public storage
+  bucket; do not store private documents here.
+
+booking_requests
+  Migration: 038_booking_page.sql.
+  Guest requests/holds made through the public booking page, including
+  payment claims and confirmation status. Process requests in the owner
+  booking-page tools.
+
+stay_reviews
+  Migration: 038_booking_page.sql.
+  Guest reviews linked to completed stays, plus moderation and owner replies.
+  Manage visibility/replies in the booking page tools.
+
+MY BUSINESS: LOANS, PARTNERS AND LEASE
+--------------------------------------
+
+business_profile
+  Migration: 039_my_business.sql.
+  Owner's yes/no setup choices for loans, partners, and lease tracking.
+  Maintain in My Business settings.
+
+business_loans
+  Migration: 039_my_business.sql.
+  Owner-entered loan principal, rate, term, EMI, and closure information.
+  Manage in My Business > Loans.
+
+business_partners
+  Migration: 039_my_business.sql.
+  Property business partners and their profit-share percentages. Manage in
+  My Business > Partners.
+
+partner_payouts
+  Migration: 039_my_business.sql.
+  Payments/distributions recorded for business partners. Add through the
+  Partners workflow; reconcile with the owner's records.
+
+business_lease
+  Migration: 039_my_business.sql.
+  Property lease terms, rent, deposit, and dates used for reminders and
+  planning. Maintain in My Business > Lease.
+
+business_reminders
+  Migration: 039_my_business.sql.
+  Tracks reminders already sent for lease, loan, or business events so they
+  are not repeatedly sent. Managed automatically.
+
+NAMMASTAY COMPANY ADMIN (PLATFORM ADMIN ONLY)
+--------------------------------------------
+
+company_profile
+  Migration: 040_company.sql.
+  Single platform-wide NammaStay company profile and planning values.
+  Authorized platform admins manage it in the Company screen.
+
+company_founders
+  Migration: 040_company.sql.
+  Founder names, roles, and ownership shares for NammaStay. Platform admin
+  data; do not confuse this with a property's business_partners.
+
+company_investments
+  Migration: 040_company.sql.
+  Capital/investment received by NammaStay itself. Enter in the Company
+  admin screen.
+
+company_costs
+  Migration: 040_company.sql.
+  NammaStay platform operating costs, separate from property expenses.
+  Maintain in Company > Costs.
+
+company_income
+  Migration: 040_company.sql.
+  NammaStay income outside subscription billing. Enter in Company > Income.
+
+company_renewals
+  Migration: 040_company.sql.
+  NammaStay company filing, service, and renewal dates/costs. Track in the
+  Company screen.
+
+company_health_snapshots
+  Migration: 040_company.sql.
+  Periodic platform-company health scores. Generated by Company Health;
+  not for manual editing.
+
+SMART PRICING
+-------------
+
+smart_price_settings
+  Migration: 041_smart_pricing.sql.
+  Per-property smart-pricing mode and guardrail settings. Configure in Smart
+  Pricing before enabling suggestions or automatic pricing.
+
+smart_price_limits
+  Migration: 041_smart_pricing.sql.
+  Per-room base/minimum/maximum prices used to constrain automatic changes.
+  Manage through Smart Pricing limits.
+
+smart_price_dates
+  Migration: 041_smart_pricing.sql.
+  Festival/event date ranges that affect pricing recommendations. Add dates
+  through Smart Pricing.
+
+smart_price_nights
+  Migration: 041_smart_pricing.sql.
+  Per-room/per-night calculated prices, suggestions, locks, and run state.
+  Generated by the pricing engine; use Apply, Skip, Lock, and Undo controls.
+
+smart_price_rules
+  Migration: 041_smart_pricing.sql.
+  Tracks the rate_rules generated by Smart Pricing so they can be managed or
+  removed without touching owner-created rules. Do not edit directly.
+
+smart_price_runs
+  Migration: 041_smart_pricing.sql.
+  Smart-pricing calculation/run history. Generated by the pricing feature.
+
+STAFF MANAGEMENT (OPTIONAL)
+---------------------------
+
+staff_settings
+  Migration: 042_staff.sql.
+  Property staff settings, including QR attendance configuration and salary
+  visibility rules. Manage from the Staff screen.
+
+staff_shifts
+  Migration: 042_staff.sql.
+  Reusable staff shift definitions. Configure in Staff > Shifts.
+
+staff_members
+  Migration: 042_staff.sql.
+  Staff profile, job, pay settings, attendance PIN hash, and private document
+  paths. Manage in the Staff screen. Do not store or export the PIN itself.
+
+staff_roster
+  Migration: 042_staff.sql.
+  Staff member's assigned shift/day-off for a particular date. Manage in the
+  Staff roster.
+
+staff_attendance
+  Migration: 042_staff.sql.
+  Daily attendance, check-in/out times, and marking source. Use QR/manual
+  attendance controls; preserve the attendance history.
+
+staff_leave
+  Migration: 042_staff.sql.
+  Staff leave requests, dates, type, and approval state. Review in the Staff
+  leave screen.
+
+staff_advances
+  Migration: 042_staff.sql.
+  Salary advances issued to staff and their repayment state. Record through
+  Staff payroll tools.
+
+staff_payslips
+  Migration: 042_staff.sql.
+  Monthly staff payroll/payslip records. Generate and mark paid from Staff
+  payroll; salary visibility is restricted.
+
+staff_qr_tries
+  Migration: 042_staff.sql.
+  QR/PIN attempt tracking used to limit attendance abuse. Automatically
+  maintained; do not clear it to bypass rate limits.
+
+TABLES THAT DO NOT EXIST
+------------------------
+Branches do not have a separate branches table. A branch is represented as
+its own row in properties, with access managed through property_members and
+the branch RPCs added by 043_branches.sql.
+
+045_public_property_count.sql creates a read-only aggregate RPC, not a table.
+035_fix_upi_check.sql corrects validation constraints; it creates no table.
+Supabase Auth users and Storage objects/buckets are managed by Supabase and
+are not part of the 97 application tables listed above.
+
+END OF GUIDE
