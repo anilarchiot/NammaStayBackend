@@ -9,7 +9,7 @@ The website lives in the separate frontend repo (**NammaStayFrontend**, served b
 
 | Path | What it is |
 |---|---|
-| `supabase/migrations/` | Canonical, ordered SQL source of truth (001–046). Apply each migration once, in numeric order, to a new project. |
+| `supabase/migrations/` | Canonical, ordered SQL source of truth (001–047). Apply each migration once, in numeric order, to a new project. |
 | `supabase/setup/checks/4_check_which_updates_to_run.sql` | Checks an existing database and reports which migrations are still needed. |
 | `supabase/SETUP_ALL.sql` | Legacy bundle through 028 only; it is not the complete current schema. Use the migrations directory for new projects. |
 | `supabase/functions/` | Supabase Edge Functions; deploy through `.github/workflows/deploy-functions.yml`. |
@@ -49,7 +49,7 @@ The website lives in the separate frontend repo (**NammaStayFrontend**, served b
 | `supabase/migrations/038_booking_page.sql` | Optional public booking page |
 | `supabase/migrations/039_my_business.sql`–`041_smart_pricing.sql` | My business, company tools and smart pricing |
 | `supabase/migrations/042_staff.sql` | Optional staff management |
-| `supabase/migrations/043_branches.sql`–`046_property_type_sync.sql` | Branches, Channex key settings, public aggregate count, and property-type UI synchronization |
+| `supabase/migrations/043_branches.sql`–`047_preserve_property_mode_data.sql` | Branches, Channex key settings, public aggregate count, and property-mode switching without deleting records |
 | `supabase/functions/billing-reminders` | Daily: creates reminders, emails owners (Resend) |
 | `supabase/setup/reminders_schedule.sql` | Runs billing reminders every morning |
 | `supabase/functions/razorpay` | Creates payment links, checks status, receives Razorpay webhooks |
@@ -71,7 +71,7 @@ supabase secrets set RESEND_API_KEY=... MAIL_FROM="..." WEBHOOK_SECRET=... CRON_
 The only key that goes in the frontend is the **anon public** key (in its `assets/js/config.js`). The **service_role** key never goes anywhere public.
 
 ## Making changes later
-1. Add the next numbered SQL file to `supabase/migrations/` (currently `047_*.sql`).
+1. Add the next numbered SQL file to `supabase/migrations/` (currently `048_*.sql`).
 2. Try it on a test Supabase project first.
 3. Run it on the live project in SQL Editor, then re-run `supabase/tests/01_security_checks.sql`.
 4. Keep the frontend RPCs and tables in sync with that migration.

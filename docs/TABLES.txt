@@ -75,9 +75,11 @@ For the recent frontend/database alignment, check these in particular:
   043_branches.sql - branch management functions (branches are properties).
   044_channex_key.sql - Channex key setting and functions.
   045_public_property_count.sql - public count function used by login/signup.
-  046_property_type_sync.sql - keeps the admin type selector and PG/resort modes
-      synchronized; selecting Hostel clears those modes so the app UI returns
-      to the standard Hostel screens.
+  046_property_type_sync.sql - synchronizes admin type changes with PG/resort
+      modes.
+  047_preserve_property_mode_data.sql - switches PG/resort modes off without
+      deleting their mode rows or tenant/rent history. Selecting Hostel makes
+      the app use standard Hostel screens while preserving PG records.
 
 Then run supabase/tests/01_security_checks.sql. For a brand-new project, follow
 the migration ordering in HOW TO APPLY SQL above, then the setup steps in
