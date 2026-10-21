@@ -2,7 +2,7 @@
 -- NammaStay · which updates does my database still need?
 -- Paste in Supabase → SQL Editor → Run. false = run that migration from
 -- supabase/migrations, in number order (lowest first).
--- Current frontend features need 001–037 (including the 035 fix), 039–041, 043–045.
+-- Current frontend features need 001–037 (including the 035 fix), 039–041, 043–046.
 -- 038 (public booking page) and 042 (staff management) are optional features.
 -- =====================================================================
 select * from (values
@@ -48,5 +48,6 @@ select * from (values
  ('042_staff (optional)',    exists(select 1 from pg_proc where proname = 'staff_get')),
  ('043_branches',            exists(select 1 from pg_proc where proname = 'branch_create')),
  ('044_channex_key',         exists(select 1 from pg_proc where proname = 'cx_key_save')),
- ('045_public_property_count', exists(select 1 from pg_proc where proname = 'public_property_count'))
+ ('045_public_property_count', exists(select 1 from pg_proc where proname = 'public_property_count')),
+ ('046_property_type_sync', exists(select 1 from pg_trigger where tgname = 'sync_property_type_modes' and not tgisinternal))
 ) t(update_file, done) order by 1;

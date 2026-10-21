@@ -27,7 +27,7 @@ This guide lives in the **backend repo**. The website is in the separate **front
 | `login.html` + other `*.html`, `assets/` | The app. Works as a demo until `assets/js/config.js` is filled in. |
 | `assets/js/core.js` | Login check, roles, formatting, dialogs, notification bell. |
 | `assets/js/pages/*.js` | One script per screen; each calls the database functions. |
-| `supabase/migrations/` | Canonical SQL source of truth: apply files in numeric order (001–045). |
+| `supabase/migrations/` | Canonical SQL source of truth: apply files in numeric order (001–046). |
 | `supabase/setup/checks/4_check_which_updates_to_run.sql` | Reports missing migrations for an existing database. |
 | `supabase/setup/004_seed.sql`, `005_schedule.sql` | One-time setup you edit before running. |
 | `supabase/tests/01_security_checks.sql` | Security checks — run before launch and after every change. |
@@ -50,7 +50,7 @@ This guide lives in the **backend repo**. The website is in the separate **front
 
 ### New project
 
-Run the numbered files in `supabase/migrations/` in ascending order, one at a time. This includes the frontend's current database features (through `045_public_property_count.sql`). Files `038_booking_page.sql` and `042_staff.sql` are optional features; run them only if you plan to enable those features.
+Run the numbered files in `supabase/migrations/` in ascending order, one at a time. This includes the frontend's current database features (through `046_property_type_sync.sql`). Files `038_booking_page.sql` and `042_staff.sql` are optional features; run them only if you plan to enable those features.
 
 Do not use `supabase/SETUP_ALL.sql` as a replacement: it is an older bundle and stops at migration 028.
 
