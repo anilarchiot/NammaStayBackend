@@ -20,7 +20,7 @@
 -- ---------- Settings (single row) ----------
 create table public.platform_settings (
   id          int primary key default 1 check (id = 1),
-  upi_id      text check (upi_id is null or upi_id ~ '^[A-Za-z0-9._-]{2,256}@[A-Za-z]{2,64}$'),
+  upi_id      text check (upi_id is null or upi_id ~ '^[A-Za-z0-9._-]{2,255}@[A-Za-z]{2,64}$'),
   payee_name  text not null default 'NammaStay',
   trial_days  int  not null default 15 check (trial_days between 0 and 90),
   grace_days  int  not null default 3  check (grace_days between 0 and 30),

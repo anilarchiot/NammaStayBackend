@@ -1,9 +1,9 @@
 -- =====================================================================
 -- NammaStay · which updates does my database still need?
--- Paste in Supabase → SQL Editor → Run.  false = run that file from the
--- "updates" folder, in number order (lowest first).
--- Release Oct 2026: needed now = 001–037, 039, 044 (+035 fix). 038 booking page and 042 staff are held back;
--- 040, 041, 043 are optional (folder B). false on those is fine unless you install them.
+-- Paste in Supabase → SQL Editor → Run. false = run that migration from
+-- supabase/migrations, in number order (lowest first).
+-- Current frontend features need 001–037 (including the 035 fix), 039–041, 043–045.
+-- 038 (public booking page) and 042 (staff management) are optional features.
 -- =====================================================================
 select * from (values
  ('001-003 core',            exists(select 1 from information_schema.tables  where table_schema='public' and table_name='bookings')),
@@ -36,13 +36,17 @@ select * from (values
  ('032_pg_app',              exists(select 1 from pg_proc where proname = 'pg_dashboard')),
  ('033_homestay',            exists(select 1 from pg_proc where proname = 'booking_meal_set')),
  ('034_resort',              exists(select 1 from pg_proc where proname = 'activity_book')),
+ ('035_fix_upi_check',      not exists(select 1 from pg_constraint
+    where conrelid in (to_regclass('public.properties'), to_regclass('public.platform_settings'))
+      and contype = 'c' and pg_get_constraintdef(oid) like '%{2,256}%')),
  ('036_investment',          exists(select 1 from pg_proc where proname = 'legal_checklist_get')),
  ('037_business_health',     exists(select 1 from pg_proc where proname = 'business_health')),
- ('038_booking_page',        exists(select 1 from pg_proc where proname = 'bp_public')),
+ ('038_booking_page (optional)', exists(select 1 from pg_proc where proname = 'bp_public')),
  ('039_my_business',         exists(select 1 from pg_proc where proname = 'biz_summary')),
  ('040_company',             exists(select 1 from pg_proc where proname = 'company_health')),
  ('041_smart_pricing',       exists(select 1 from pg_proc where proname = 'sp_get')),
- ('042_staff',               exists(select 1 from pg_proc where proname = 'staff_get')),
+ ('042_staff (optional)',    exists(select 1 from pg_proc where proname = 'staff_get')),
  ('043_branches',            exists(select 1 from pg_proc where proname = 'branch_create')),
- ('044_channex_key',         exists(select 1 from pg_proc where proname = 'cx_key_save'))
+ ('044_channex_key',         exists(select 1 from pg_proc where proname = 'cx_key_save')),
+ ('045_public_property_count', exists(select 1 from pg_proc where proname = 'public_property_count'))
 ) t(update_file, done) order by 1;

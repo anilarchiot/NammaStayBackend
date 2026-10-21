@@ -1,6 +1,6 @@
 -- =====================================================================
 -- NammaStay · security & integrity checks
--- Run in SQL Editor after 001–004. Every query should return 0 rows
+-- Run in SQL Editor after the required migrations and setup. Every query should return 0 rows
 -- (or the stated expected result). Re-run after any schema change.
 -- =====================================================================
 
@@ -21,9 +21,11 @@ select table_name, privilege_type
    and table_name in ('bookings','payments','audit_log','property_members','leads','platform_admins')
    and privilege_type in ('INSERT','UPDATE','DELETE');
 
--- 4. Functions anonymous visitors can call                      → expect exactly these 6:
+-- 4. Functions anonymous visitors can call                      → expect these 7:
 --    checkin_upload_allowed, selfcheckin_get, selfcheckin_submit, submit_lead (006),
---    guide_for_token (030 guest guide), pg_selfcheckin_info (032 PG self check-in)
+--    guide_for_token (030 guest guide), pg_selfcheckin_info (032 PG self check-in),
+--    public_property_count (045; aggregate only).
+--    Optional 038 public booking features add their documented public functions.
 select p.proname
   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
  where n.nspname = 'public' and has_function_privilege('anon', p.oid, 'EXECUTE')

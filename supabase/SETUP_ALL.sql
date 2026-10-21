@@ -1,8 +1,7 @@
 -- =====================================================================
--- NammaStay · SETUP_ALL.sql — the complete backend in one file
--- = 001 + 002 + 003 + 006 + 007 + 008 … 027 + 028_onboarding
--- Run once on a NEW Supabase project (SQL Editor → paste → Run).
--- Then run 004_seed.sql (your hostel + owner) and the optional schedules (005, ota, reminders, channex).
+-- LEGACY BUNDLE: contains migrations only through 028_onboarding.
+-- For a current install, apply supabase/migrations/*.sql in numeric order instead.
+-- Then run supabase/setup/004_seed.sql (your hostel + owner) and any optional schedules.
 -- ALREADY LIVE? Don't re-run this — run only the newest migration(s) you haven't run yet.
 -- =====================================================================
 

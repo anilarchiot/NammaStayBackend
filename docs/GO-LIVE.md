@@ -27,12 +27,13 @@ This guide lives in the **backend repo**. The website is in the separate **front
 | `login.html` + other `*.html`, `assets/` | The app. Works as a demo until `assets/js/config.js` is filled in. |
 | `assets/js/core.js` | Login check, roles, formatting, dialogs, notification bell. |
 | `assets/js/pages/*.js` | One script per screen; each calls the database functions. |
-| `supabase/migrations/001–003, 006–028` | The database structure: run in order (or `SETUP_ALL.sql`). |
+| `supabase/migrations/` | Canonical SQL source of truth: apply files in numeric order (001–045). |
+| `supabase/setup/checks/4_check_which_updates_to_run.sql` | Reports missing migrations for an existing database. |
 | `supabase/setup/004_seed.sql`, `005_schedule.sql` | One-time setup you edit before running. |
 | `supabase/tests/01_security_checks.sql` | Security checks — run before launch and after every change. |
 | `supabase/tests/02_load_test.sql` | 1.5 lakh-booking load test — **separate test project only**. |
 | `supabase/functions/` | `notify-booking` (booking emails), `notify-lead` (homepage leads), `purge-id-docs` (privacy cleanup). |
-| `supabase/SETUP_ALL.sql` | 001 + 002 + 003 + 006 in one file. |
+| `supabase/SETUP_ALL.sql` | Legacy bundle through 028; do not use it as a complete current install. |
 
 ---
 
@@ -47,38 +48,19 @@ This guide lives in the **backend repo**. The website is in the separate **front
 
 ## 2. Build the database
 
-Supabase → **SQL Editor** → New query. Paste and **Run** each file, in order, one at a time:
+### New project
 
-1. `supabase/migrations/001_schema.sql` — tables, indexes, double-booking guard
-2. `supabase/migrations/002_security.sql` — row-level security, grants, private ID bucket
-3. `supabase/migrations/003_functions.sql` — every query the app uses
-4. `supabase/migrations/006_marketing.sql` — homepage contact form (leads)
-5. `supabase/migrations/007_subscriptions.sql` — plans, 15-day trial, UPI subscription payments
-6. `supabase/migrations/008_delete_booking.sql` — delete bookings entered by mistake
-7. `supabase/migrations/009_edit_guest.sql` — edit guest profiles
-8. `supabase/migrations/010_id_front_back.sql` — ID photos: front and back
-9. `supabase/migrations/011_admin_panel.sql` — admin panel & account suspension
-10. `supabase/migrations/012_delete_guest.sql` — delete a guest completely
-11. `supabase/migrations/013_admin_add_property.sql` — add a property for a customer
-12. `supabase/migrations/014_hotels_homestays.sql` — hotels & homestays: rooms, guests, extra-guest charges
-13. `supabase/migrations/015_plans_by_type.sql` — subscription prices by property type and size
-14. `supabase/migrations/016_extras.sql` — extras on the bill (food, laundry, rentals…)
-15. `supabase/migrations/017_role_permissions.sql` — what each role can do
-16. `supabase/migrations/018_invoice_offers.sql` — GST invoices & receipts, regular-guest offers
-17. `supabase/migrations/019_prices_oct_2026.sql` — new subscription prices
-18. `supabase/migrations/020_ota_sync.sql` — OTA calendar sync (iCal)
-19. `supabase/migrations/021_expenses_paylinks.sql` — expenses & profit, Razorpay payment links
-20. `supabase/migrations/022_admin_2fa.sql` — 2-step login for the admin pages
-21. `supabase/migrations/023_platform_invoices_reminders.sql` — GST invoices for subscriptions + billing reminders
-22. `supabase/migrations/024_form_c.sql` — Form C for foreign guests
-23. `supabase/migrations/025_admin_growth.sql` — admin: health, revenue, coupons, activity log, lead → property
-24. `supabase/migrations/026_pricing_housekeeping.sql` — seasonal & weekend pricing, housekeeping board
-25. `supabase/migrations/027_channex.sql` — two-way channel manager (Channex)
-26. `supabase/migrations/028_onboarding.sql` — setup wizard for new owners
+Run the numbered files in `supabase/migrations/` in ascending order, one at a time. This includes the frontend's current database features (through `045_public_property_count.sql`). Files `038_booking_page.sql` and `042_staff.sql` are optional features; run them only if you plan to enable those features.
 
-Shortcut: `supabase/SETUP_ALL.sql` contains all sixteen in one file — paste it once and Run.
+Do not use `supabase/SETUP_ALL.sql` as a replacement: it is an older bundle and stops at migration 028.
 
-If a file errors, fix and re-run that file only after dropping what it created (simplest on a new project: **Settings → General → Reset/delete project** and start again).
+### Existing project
+
+1. Run `supabase/setup/checks/4_check_which_updates_to_run.sql` in the SQL Editor.
+2. For every `false` result, run that numbered file from `supabase/migrations/`, lowest number first. Do not re-run files already marked `true`.
+3. After applying the migrations, run `supabase/tests/01_security_checks.sql`.
+
+Test SQL changes on a staging project first. Do not reset a live project to recover from a migration error.
 
 ## 3. Create your login and seed your hostel
 
@@ -116,7 +98,7 @@ Run `supabase/tests/01_security_checks.sql` in the SQL Editor. Expected:
 | 1. Tables without RLS | 0 rows |
 | 2. Anonymous table grants | 0 rows |
 | 3. Direct staff writes to bookings/payments | 0 rows |
-| 4. Functions anonymous visitors can call | exactly `checkin_upload_allowed`, `selfcheckin_get`, `selfcheckin_submit`, `submit_lead` |
+| 4. Functions anonymous visitors can call | includes `checkin_upload_allowed`, `selfcheckin_get`, `selfcheckin_submit`, `submit_lead`, `guide_for_token`, `pg_selfcheckin_info`, `public_property_count` (plus any enabled optional public-booking functions) |
 | 5. Definer functions without fixed search_path | 0 rows |
 | 6. `guest-ids` bucket | `public = false` |
 | 7. Double booking | NOTICE `PASS` |

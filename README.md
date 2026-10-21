@@ -9,7 +9,11 @@ The website lives in the separate frontend repo (**NammaStayFrontend**, served b
 
 | Path | What it is |
 |---|---|
-| `supabase/SETUP_ALL.sql` | Complete database in one file (001 + 002 + 003 + 006 + 007 + 008). Paste once into SQL Editor on a new project. |
+| `supabase/migrations/` | Canonical, ordered SQL source of truth (001–045). Apply each migration once, in numeric order, to a new project. |
+| `supabase/setup/checks/4_check_which_updates_to_run.sql` | Checks an existing database and reports which migrations are still needed. |
+| `supabase/SETUP_ALL.sql` | Legacy bundle through 028 only; it is not the complete current schema. Use the migrations directory for new projects. |
+| `supabase/functions/` | Supabase Edge Functions; deploy through `.github/workflows/deploy-functions.yml`. |
+| `supabase/setup/` | Seeds, schedules, checks, rollbacks and dated historical SQL snapshots. |
 | `supabase/migrations/001_schema.sql` | Tables, indexes, double-booking guard, triggers |
 | `supabase/migrations/002_security.sql` | Row Level Security, roles, private ID-photo bucket |
 | `supabase/migrations/003_functions.sql` | Every query the app uses (bookings, payments, reports, self check-in…) |
@@ -40,6 +44,12 @@ The website lives in the separate frontend repo (**NammaStayFrontend**, served b
 | `supabase/functions/channex` | Talks to Channex: setup, push prices/availability, pull & acknowledge OTA bookings |
 | `supabase/setup/channex_schedule.sql` | Channel manager every 5 minutes |
 | `supabase/migrations/028_onboarding.sql` | Setup wizard progress for new owners |
+| `supabase/migrations/029_public_api.sql`–`034_resort.sql` | Public API, booking guests, PG, homestay and resort features |
+| `supabase/migrations/035_fix_upi_check.sql`–`037_business_health.sql` | UPI validation fix, investment tools and business health |
+| `supabase/migrations/038_booking_page.sql` | Optional public booking page |
+| `supabase/migrations/039_my_business.sql`–`041_smart_pricing.sql` | My business, company tools and smart pricing |
+| `supabase/migrations/042_staff.sql` | Optional staff management |
+| `supabase/migrations/043_branches.sql`–`045_public_property_count.sql` | Branches, Channex key settings and public aggregate count |
 | `supabase/functions/billing-reminders` | Daily: creates reminders, emails owners (Resend) |
 | `supabase/setup/reminders_schedule.sql` | Runs billing reminders every morning |
 | `supabase/functions/razorpay` | Creates payment links, checks status, receives Razorpay webhooks |
@@ -48,7 +58,7 @@ The website lives in the separate frontend repo (**NammaStayFrontend**, served b
 | `supabase/setup/005_schedule.sql` | Nightly ID-photo cleanup — edit project ref + secret first |
 | `supabase/setup/undo_direct_booking.sql` | Only if you ran the earlier 018 with the booking page — removes the page |
 | `supabase/setup/undo_formc_badges_expenses.sql` | Only if you ran the earlier Form C / badges / expenses migration — removes it |
-| `supabase/functions/` | `notify-booking`, `notify-lead` (emails via Resend), `purge-id-docs` |
+| `supabase/functions/` | All nine Edge Functions: `api`, `billing-reminders`, `channex`, `ical`, `notify-booking`, `notify-lead`, `ota-sync`, `purge-id-docs`, `razorpay` |
 | `supabase/tests/` | Security checks + lakhs-of-rows load test (test project only) |
 | `docs/GO-LIVE.md` | Step-by-step launch guide |
 
@@ -61,7 +71,8 @@ supabase secrets set RESEND_API_KEY=... MAIL_FROM="..." WEBHOOK_SECRET=... CRON_
 The only key that goes in the frontend is the **anon public** key (in its `assets/js/config.js`). The **service_role** key never goes anywhere public.
 
 ## Making changes later
-1. Add a new numbered file, e.g. `supabase/migrations/007_something.sql`.
+1. Add the next numbered SQL file to `supabase/migrations/` (currently `046_*.sql`).
 2. Try it on a test Supabase project first.
 3. Run it on the live project in SQL Editor, then re-run `supabase/tests/01_security_checks.sql`.
-4. Commit it here so the history stays complete.
+4. Keep the frontend RPCs and tables in sync with that migration.
+5. Commit it here so the history stays complete.
