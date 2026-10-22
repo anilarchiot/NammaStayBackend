@@ -12,7 +12,14 @@ on:
   push:
     branches: [main]
     paths: ['supabase/functions/**', 'supabase/config.toml']
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      function:
+        description: Deploy all functions or only the Beds24 connector
+        required: true
+        type: choice
+        options: [all, connect]
+        default: all
 
 jobs:
   deploy:
@@ -20,6 +27,7 @@ jobs:
     env:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+      DEPLOY_FUNCTION: ${{ inputs.function || 'all' }}
     steps:
       - uses: actions/checkout@v4
       - uses: supabase/setup-cli@v1
@@ -27,6 +35,10 @@ jobs:
           version: latest
       - name: Deploy functions
         run: |
-          for fn in notify-booking notify-lead purge-id-docs ical ota-sync razorpay billing-reminders channex api; do
-            supabase functions deploy "$fn" --project-ref "$PROJECT_ID" --no-verify-jwt
-          done
+          if [ "$DEPLOY_FUNCTION" = "connect" ]; then
+            supabase functions deploy connect --project-ref "$PROJECT_ID" --no-verify-jwt
+          else
+            for fn in notify-booking notify-lead purge-id-docs ical ota-sync razorpay billing-reminders channex api connect; do
+              supabase functions deploy "$fn" --project-ref "$PROJECT_ID" --no-verify-jwt
+            done
+          fi
