@@ -190,6 +190,9 @@ begin
                where sp.status = 'pending'),
     'properties', (select coalesce(jsonb_agg(r order by r->>'created_at' desc), '[]'::jsonb) from (
                 select jsonb_build_object('property_id', p.id, 'name', p.name, 'city', p.city, 'created_at', p.created_at,
+                  'kind', case when exists (select 1 from public.pg_properties pg where pg.property_id = p.id) then 'pg'
+                               when exists (select 1 from public.resort_properties r where r.property_id = p.id) then 'resort'
+                               else p.kind end,
                   'owner_email', (select m.email from public.property_members m where m.property_id = p.id and m.role = 'owner' order by m.created_at limit 1),
                   'owner_name', (select m.display_name from public.property_members m where m.property_id = p.id and m.role = 'owner' order by m.created_at limit 1),
                   'beds', (select count(*) from public.beds b where b.property_id = p.id and b.is_active),
