@@ -47,7 +47,8 @@ async function setup(propertyId: string, existingCx?: string) {
       email: d.property.email || undefined, phone: d.property.phone || undefined, city: d.property.city || undefined, address: d.property.address || undefined } }) });
     cxProp = res.data.id;
   }
-  const known = Object.fromEntries((d.maps || []).map((m: { group_key: string }) => [m.group_key, m]));
+  const replacingProperty = !!d.link?.cx_property_id && d.link.cx_property_id !== cxProp;
+  const known = Object.fromEntries((replacingProperty ? [] : d.maps || []).map((m: { group_key: string }) => [m.group_key, m]));
   const maps = [];
   for (const g of d.groups) {
     const m = known[g.group_key] || {};
