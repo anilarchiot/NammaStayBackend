@@ -6,7 +6,7 @@
 // Secrets:  RESEND_API_KEY, MAIL_FROM, WEBHOOK_SECRET, LEADS_NOTIFY_EMAIL, MARKETING_URL / ADMIN_URL (optional)
 // Deploy:   supabase functions deploy notify-lead --no-verify-jwt
 const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY") ?? "";
-const MAIL_FROM = Deno.env.get("MAIL_FROM") ?? "NammaStay <hello@thenammastay.com>";
+const MAIL_FROM = Deno.env.get("MAIL_FROM") ?? "TheNammaStay <hello@thenammastay.com>";
 const SITE_URL = (Deno.env.get("MARKETING_URL") ?? "https://thenammastay.com").replace(/\/$/, "");   // the homepage
 const ADMIN_URL = (Deno.env.get("ADMIN_URL") ?? "https://thenammastay.com").replace(/\/$/, "");   // admin pages are on the same site
 const SECRET = Deno.env.get("WEBHOOK_SECRET") ?? "";
@@ -35,7 +35,7 @@ Deno.serve(async (req) => {
   const wa = l.phone ? `https://wa.me/${String(l.phone).replace(/\D/g, "")}` : "";
 
   if (NOTIFY) {
-    await send(NOTIFY, `New NammaStay lead — ${l.name}${l.city ? " · " + l.city : ""}`,
+    await send(NOTIFY, `New TheNammaStay lead — ${l.name}${l.city ? " · " + l.city : ""}`,
       `<div style="font-family:system-ui,sans-serif;color:#101A3D">
         <h2 style="margin:0 0 12px">New early-access request</h2>
         <table style="font-size:14px;border-collapse:collapse">
@@ -44,17 +44,17 @@ Deno.serve(async (req) => {
         </table>
         <p style="margin:16px 0 0">
           ${wa ? `<a href="${wa}" style="margin-right:16px">WhatsApp them</a>` : ""}
-          <a href="${ADMIN_URL}/leads.html">Open leads in NammaStay admin</a></p>
+          <a href="${ADMIN_URL}/leads.html">Open leads in TheNammaStay admin</a></p>
       </div>`, l.email || undefined).catch((e) => errors.push(String(e)));
   }
 
   if (l.email) {
-    await send(l.email, "Thanks for your interest in NammaStay",
+    await send(l.email, "Thanks for your interest in TheNammaStay",
       `<div style="font-family:system-ui,sans-serif;color:#101A3D;line-height:1.6">
         <h2 style="margin:0 0 12px">Thanks, ${esc(String(l.name).split(" ")[0])}!</h2>
         <p style="margin:0 0 12px">We’ve got your request${l.property_name ? ` for <b>${esc(l.property_name)}</b>` : ""} and will get in touch shortly to set things up.</p>
         <p style="margin:0 0 16px">Meanwhile, you can click around the live demo — it’s loaded with a sample 9-bed hostel.</p>
-        <p style="margin:0"><a href="${SITE_URL}" style="background:#1C9A6C;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:700">Visit NammaStay</a></p>
+        <p style="margin:0"><a href="${SITE_URL}" style="background:#1C9A6C;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:700">Visit TheNammaStay</a></p>
       </div>`).catch((e) => errors.push(String(e)));
   }
 

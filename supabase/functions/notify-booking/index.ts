@@ -10,7 +10,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 
 const sb = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY") ?? "";
-const MAIL_FROM = Deno.env.get("MAIL_FROM") ?? "NammaStay <bookings@thenammastay.com>";
+const MAIL_FROM = Deno.env.get("MAIL_FROM") ?? "TheNammaStay <bookings@thenammastay.com>";
 const SITE_URL = (Deno.env.get("APP_URL") ?? "https://thenammastay.com").replace(/\/$/, "");   // the website (app pages live at /login.html etc.)
 const SECRET = Deno.env.get("WEBHOOK_SECRET") ?? "";
 
@@ -61,7 +61,7 @@ Deno.serve(async (req) => {
       `<div style="font-family:system-ui,sans-serif;color:#101A3D">
          <h2 style="margin:0 0 12px">New booking</h2>
          <p style="margin:0 0 8px">${esc(guest.full_name)} · ${esc(guest.phone ?? "")}</p>${summary}
-         <p style="margin:16px 0 0"><a href="${SITE_URL}/booking-detail.html?id=${b.id}">Open in NammaStay</a></p>
+         <p style="margin:16px 0 0"><a href="${SITE_URL}/booking-detail.html?id=${b.id}">Open in TheNammaStay</a></p>
        </div>`).catch((e) => errors.push(String(e)));
   }
 

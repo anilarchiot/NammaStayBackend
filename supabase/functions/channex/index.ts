@@ -25,7 +25,7 @@ const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers
 const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 
 async function cx(path: string, init: RequestInit = {}) {
-  if (!KEY) throw new Error("Channex isn’t switched on yet — a NammaStay admin adds the API key in Admin → Channel manager.");
+  if (!KEY) throw new Error("Channex isn’t switched on yet — an admin from TheNammaStay adds the API key in Admin → Channel manager.");
   const r = await fetch(CX + "/api/v1" + path, { ...init, headers: { "Content-Type": "application/json", "user-api-key": KEY, ...(init.headers ?? {}) } });
   const body = await r.json().catch(() => ({}));
   if (!r.ok) {
@@ -143,9 +143,9 @@ Deno.serve(async (req) => {
   if (!auth.startsWith("Bearer ")) return json({ error: "Please sign in." }, 401);
   const user = createClient(URL_, Deno.env.get("SUPABASE_ANON_KEY")!, { global: { headers: { Authorization: auth } } });
   const body = await req.json().catch(() => ({}));
-  if (body.action === "key_test") {                                                    // NammaStay admins only (044)
+  if (body.action === "key_test") {                                                    // TheNammaStay admins only (044)
     const { data: isAdmin } = await user.rpc("is_platform_admin");
-    if (isAdmin !== true) return json({ error: "Only NammaStay admins can do this." }, 403);
+    if (isAdmin !== true) return json({ error: "Only TheNammaStay admins can do this." }, 403);
     try {
       const r = await cx("/properties?pagination[page]=1&pagination[limit]=100");
       return json({ ok: true, live: CX.includes("app.channex.io"), properties: (r.data || []).map((p: { id: string; attributes?: { title?: string } }) => ({ id: p.id, title: p.attributes?.title || "" })) });

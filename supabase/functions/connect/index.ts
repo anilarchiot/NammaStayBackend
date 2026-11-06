@@ -54,7 +54,7 @@ async function syncInner(id: string, opts: { push: boolean; full: boolean }, pus
   if (!c) throw new Error("Connection not found.");
   if (c.status !== "live" || !c.ota_enabled) {
     return { skipped: true, imported: 0, problems: [], nights_sent: 0,
-      reason: c.status === "paused" ? "Paused." : c.status === "setup" ? "Match rooms and go live first." : "Waiting — this OTA isn’t switched on for NammaStay yet." };
+      reason: c.status === "paused" ? "Paused." : c.status === "setup" ? "Match rooms and go live first." : "Waiting — this OTA isn’t switched on for TheNammaStay yet." };
   }
   const ad = adapterFor(c.ota, rpc);
   const out: SyncOut = { imported: 0, problems: [], nights_sent: 0 };
@@ -125,7 +125,7 @@ async function b24Link(propertyId: string, code: string, wantId: string | null, 
   }
   const connId = (await rpc("cn_b24_link_save", { p_property: propertyId, p_b24_property: String(p.id), p_managed: managed, p_by: null })) as string;
   await b24SaveTokens(rpc, connId, t);
-  if (!(p.roomTypes ?? []).length) {                                     // property without rooms: create one Beds24 room per NammaStay room type
+  if (!(p.roomTypes ?? []).length) {                                     // property without rooms: create one Beds24 room per TheNammaStay room type
     await b24CreateRooms(t.token, String(p.id), info.name, info.groups);
     [p] = await b24Properties(t.token, String(p.id));
     created = (p?.roomTypes ?? []).length;
@@ -143,7 +143,7 @@ async function b24Link(propertyId: string, code: string, wantId: string | null, 
   const after = (await rpc("cn_conn", { p_connection: connId })) as Conn;
   const groups = after.groups.filter((g) => g.units > 0);
   const mapped = groups.filter((g) => g.ota_room_id).length;
-  await log(connId, "in", "link", true, `Beds24 property ${p!.id} linked · ${rooms.length} room(s)${created ? `, ${created} created by NammaStay` : ""} · ${mapped}/${groups.length} matched`, rooms);
+  await log(connId, "in", "link", true, `Beds24 property ${p!.id} linked · ${rooms.length} room(s)${created ? `, ${created} created by TheNammaStay` : ""} · ${mapped}/${groups.length} matched`, rooms);
   return { connection_id: connId, b24_property_id: String(p!.id), b24_property_name: p!.name ?? "", rooms: rooms.length, created, auto_matched: auto, mapped, groups: groups.length };
 }
 
@@ -196,7 +196,7 @@ Deno.serve(async (req) => {
   }
 
   let { data: chk, error: roleErr } = await user.rpc("cn_check", { p_connection: body.connection_id });     // owner / manager of that property
-  if (roleErr || !chk) {                                                                                    // …or a NammaStay admin (046)
+  if (roleErr || !chk) {                                                                                    // …or a TheNammaStay admin (046)
     const a = await user.rpc("cn_admin_check", { p_connection: body.connection_id });
     if (!a.error && a.data) { chk = a.data; roleErr = null; }
   }

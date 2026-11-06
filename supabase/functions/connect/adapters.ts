@@ -60,7 +60,7 @@ export function testAdapter(rpc: Rpc): Adapter {
 // ---------------------------------------------------------------- real OTAs (switched on one by one after approval)
 class NotApprovedYet extends Error {}
 function pendingAdapter(otaName: string, secretNames: string[]): Adapter {
-  const why = () => new NotApprovedYet(`${otaName} hasn’t approved NammaStay as a connectivity partner yet (needs the ${secretNames.join(" / ")} secrets). Keep using iCal for now.`);
+  const why = () => new NotApprovedYet(`${otaName} hasn’t approved TheNammaStay as a connectivity partner yet (needs the ${secretNames.join(" / ")} secrets). Keep using iCal for now.`);
   return {
     listRooms: () => Promise.reject(why()),
     push: () => Promise.reject(why()),
@@ -173,7 +173,7 @@ export function b24Norm(group: Any[], known: Record<string, string>): NormRes | 
   const live = group.filter((b) => String(b.status ?? "").toLowerCase() !== "cancelled");
   const rev = fnv(group.map((b) => [b.id, b.status, b.modifiedTime ?? b.modified ?? b.bookingTime ?? "", b.arrival, b.departure, b.roomId, b.price, b.numAdult].join(":")).sort().join("|"));
   const seen = Object.prototype.hasOwnProperty.call(known, id);
-  if (!live.length && !seen) return null;                           // cancelled before NammaStay ever saw it
+  if (!live.length && !seen) return null;                           // cancelled before TheNammaStay ever saw it
   if (seen && known[id] === rev) return null;                       // nothing changed since last time
   const f = live[0] ?? group[0];
   const amount = live.reduce((s, b) => s + (Number(b.price) || 0), 0);

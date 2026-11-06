@@ -8,7 +8,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 const SECRET = Deno.env.get("CRON_SECRET") ?? "";
 const RESEND = Deno.env.get("RESEND_API_KEY") ?? "";
-const FROM = Deno.env.get("MAIL_FROM") ?? "NammaStay <onboarding@resend.dev>";
+const FROM = Deno.env.get("MAIL_FROM") ?? "TheNammaStay <onboarding@resend.dev>";
 const SITE = (Deno.env.get("APP_URL") ?? "https://thenammastay.com").replace(/\/$/, "");   // the website (app pages live at /login.html etc.)
 const esc = (s: string) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 
@@ -28,7 +28,7 @@ Deno.serve(async (req) => {
       <p>Hello ${esc(r.name)},</p>
       <p>${esc(r.text.body)}</p>
       <p style="margin:20px 0"><a href="${SITE}/settings.html?tab=billing" style="background:#1C9A6C;color:#fff;padding:12px 18px;border-radius:8px;text-decoration:none;font-weight:bold">Choose a plan</a></p>
-      <p style="color:#6B7280;font-size:13px">${esc(r.property)} · NammaStay</p></div>`;
+      <p style="color:#6B7280;font-size:13px">${esc(r.property)} · TheNammaStay</p></div>`;
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST", headers: { Authorization: `Bearer ${RESEND}`, "Content-Type": "application/json" },
       body: JSON.stringify({ from: FROM, to: [r.email], subject: `${r.text.title} · ${r.property}`, html }),
