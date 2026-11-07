@@ -1,6 +1,10 @@
 // NammaStay · channex — two-way channel manager through Channex (white-label API)
 //   POST {action:"setup", property_id, cx_property_id?}  owner/manager → create/link Channex property, room types, rate plans; first full push
 //   POST {action:"sync",  property_id}                   owner/manager → pull OTA bookings + push availability & prices now
+//   POST {action:"pull", property_id}                    owner/manager → check Channex for new / changed bookings only
+//   POST {action:"plans", property_id}                   owner/manager → room types and rate plans as they are in Channex
+//   POST {action:"restrictions", property_id, rows}      owner/manager → ONE Channex call with only the changed rate / min stay / stop sell values (ari.ts)
+//   POST {action:"availability", property_id, rows}      owner/manager → ONE Channex call with the changed availability
 //   POST {action:"iframe", property_id}                  owner/manager → link to Channex's "connect OTAs" screen (shown inside NammaStay)
 //   POST {} + header x-cron-secret                        every few minutes: pull bookings for all, push where something changed
 //   POST {action:"key_test"}                             NammaStay admin → check the saved Channex key works (044)
@@ -8,6 +12,8 @@
 //   if none is saved, the secrets CHANNEX_API_KEY / CHANNEX_URL are used (default https://staging.channex.io). Also CRON_SECRET.
 // Deploy: supabase functions deploy channex --no-verify-jwt
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { availabilityValues, fullSyncValues, responseWarnings, restrictionValues, type Night } from "./ari.ts";
+const FULL_SYNC_BATCH = 2000;
 
 const URL_ = Deno.env.get("SUPABASE_URL")!;
 const admin = createClient(URL_, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -75,30 +81,36 @@ async function setup(propertyId: string, existingCx?: string) {
   return { cx_property_id: cxProp, rooms: maps.length };
 }
 
-// ---------------------------------------------------------------- push availability + prices + minimum stay (date ranges)
-type Night = { room_type_id: string; rate_plan_id: string; date: string; availability: number; rate: number; min_stay: number };
-// Merge consecutive nights that send the same values into one date range (fewer, smaller API calls)
-function ranges<T extends Record<string, unknown>>(rows: Night[], value: (n: Night) => T) {
-  const out: (T & { date_from: string; date_to: string })[] = []; let lastKey = "";
-  const next = (dt: string) => { const x = new Date(dt + "T00:00:00Z"); x.setUTCDate(x.getUTCDate() + 1); return x.toISOString().slice(0, 10); };
-  for (const n of rows) {
-    const v = value(n); const k = JSON.stringify(v); const last = out[out.length - 1];
-    if (last && k === lastKey && next(last.date_to) === n.date) last.date_to = n.date;
-    else { out.push({ ...v, date_from: n.date, date_to: n.date }); lastKey = k; }
-  }
-  return out;
+// ---------------------------------------------------------------- push availability + prices + restrictions
+// Builders live in ari.ts (unit-tested against the Channex certification scenarios).
+async function post(path: "/availability" | "/restrictions", values: unknown[]) {
+  const res = await cx(path, { method: "POST", body: JSON.stringify({ values }) });
+  const warnings = responseWarnings(res);
+  if (warnings.length) throw new Error(`Channex rejected part of the update: ${warnings.slice(0, 3).join("; ")}`);   // 200 OK can still carry rejected values
 }
+// Full sync: every restriction (rate, min stay, stop sell) and availability for the next days, one call per kind.
 async function push(propertyId: string, cxProp: string) {
   const { data, error } = await admin.rpc("cx_ari", { p_property: propertyId, p_days: 500 });
   if (error) throw new Error(error.message);
-  const nights = (data || []) as Night[];
-  const byRoom = [...nights].sort((a, b) => a.room_type_id.localeCompare(b.room_type_id) || a.date.localeCompare(b.date));
-  const avail = ranges(byRoom, (n) => ({ property_id: cxProp, room_type_id: n.room_type_id, availability: n.availability }));
-  const rates = ranges(byRoom, (n) => ({ property_id: cxProp, rate_plan_id: n.rate_plan_id, rate: rp(n.rate), min_stay_arrival: n.min_stay }));
-  for (let i = 0; i < avail.length; i += 500) await cx("/availability", { method: "POST", body: JSON.stringify({ values: avail.slice(i, i + 500) }) });
-  for (let i = 0; i < rates.length; i += 500) await cx("/restrictions", { method: "POST", body: JSON.stringify({ values: rates.slice(i, i + 500) }) });
+  const { availability, restrictions } = fullSyncValues(cxProp, (data || []) as Night[]);
+  for (let i = 0; i < availability.length; i += FULL_SYNC_BATCH) await post("/availability", availability.slice(i, i + FULL_SYNC_BATCH));
+  for (let i = 0; i < restrictions.length; i += FULL_SYNC_BATCH) await post("/restrictions", restrictions.slice(i, i + FULL_SYNC_BATCH));
   await admin.rpc("cx_mark", { p_property: propertyId, p_kind: "push", p_error: null });
-  return { availability_updates: avail.length, price_updates: rates.length };
+  return { availability_updates: availability.length, price_updates: restrictions.length };
+}
+
+// Rate plans and room types as they exist in Channex (for the rates / availability screen).
+async function channexPlans(cxProp: string) {
+  const [rt, rpl] = await Promise.all([
+    cx(`/room_types?filter[property_id]=${cxProp}&pagination[limit]=200`),
+    cx(`/rate_plans?filter[property_id]=${cxProp}&pagination[limit]=200`),
+  ]);
+  const rooms = (rt.data || []).map((r: { id: string; attributes?: { title?: string } }) => ({ id: r.id, title: r.attributes?.title || r.id }));
+  const title = Object.fromEntries(rooms.map((r: { id: string; title: string }) => [r.id, r.title]));
+  const plans = (rpl.data || []).map((p: { id: string; attributes?: { title?: string; room_type_id?: string; currency?: string } }) => ({
+    id: p.id, title: p.attributes?.title || p.id, room_type_id: p.attributes?.room_type_id || "", room: title[p.attributes?.room_type_id || ""] || "", currency: p.attributes?.currency || "",
+  }));
+  return { rooms, plans };
 }
 
 // ---------------------------------------------------------------- pull OTA bookings (feed) → NammaStay, then acknowledge
@@ -167,6 +179,23 @@ Deno.serve(async (req) => {
       await admin.rpc("cx_mark", { p_property: body.property_id, p_kind: "pull", p_error: null });
       const pushed = await push(body.property_id, cxProp);
       return json({ ok: true, ...pulled, ...pushed });
+    }
+    if (body.action === "plans") return json({ ok: true, cx_property_id: cxProp, ...(await channexPlans(cxProp)) });
+    if (body.action === "pull") {
+      const pulled = await pull(cxProp);
+      await admin.rpc("cx_mark", { p_property: body.property_id, p_kind: "pull", p_error: null });
+      return json({ ok: true, ...pulled });
+    }
+    // One save = one Channex call containing only the values that were changed.
+    if (body.action === "restrictions") {
+      await post("/restrictions", restrictionValues(cxProp, body.rows));
+      await admin.rpc("cx_mark", { p_property: body.property_id, p_kind: "push", p_error: null });
+      return json({ ok: true, sent: body.rows.length });
+    }
+    if (body.action === "availability") {
+      await post("/availability", availabilityValues(cxProp, body.rows));
+      await admin.rpc("cx_mark", { p_property: body.property_id, p_kind: "push", p_error: null });
+      return json({ ok: true, sent: body.rows.length });
     }
     if (body.action === "iframe") {
       const t = await cx("/auth/one_time_token", { method: "POST", body: JSON.stringify({ one_time_token: { property_id: cxProp } }) });
