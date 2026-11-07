@@ -56,14 +56,25 @@ async function setup(propertyId: string, existingCx?: string) {
   const replacingProperty = !!d.link?.cx_property_id && d.link.cx_property_id !== cxProp;
   const known = Object.fromEntries((replacingProperty ? [] : d.maps || []).map((m: { group_key: string }) => [m.group_key, m]));
   const maps = [];
+  // Channex refuses two room types with the same title: reuse the ones already in that property.
+  const existing = await channexPlans(cxProp);
+  const byTitle = new Map<string, { id: string; title: string }>(existing.rooms.map((r: { id: string; title: string }) => [r.title.trim().toLowerCase(), r]));
+  const taken = new Set(Object.values(known).map((m) => (m as { cx_room_type_id?: string }).cx_room_type_id));
   for (const g of d.groups) {
     const m = known[g.group_key] || {};
     let rt = m.cx_room_type_id; let rpId = m.cx_rate_plan_id;
     if (!rt) {
+      const found = byTitle.get(String(g.title).trim().toLowerCase());
+      if (found && !taken.has(found.id)) { rt = found.id; rpId = rpId || existing.plans.find((p: { room_type_id: string; id: string }) => p.room_type_id === rt)?.id; }
+    }
+    if (rt) taken.add(rt);
+    if (!rt) {
+      let title = g.title; let n = 2;
+      while (byTitle.has(String(title).trim().toLowerCase())) title = `${g.title} (${n++})`;
       const res = await cx("/room_types", { method: "POST", body: JSON.stringify({ room_type: {
-        property_id: cxProp, title: g.title, count_of_rooms: g.count, occ_adults: g.occ_adults, occ_children: 0, occ_infants: 0,
+        property_id: cxProp, title, count_of_rooms: g.count, occ_adults: g.occ_adults, occ_children: 0, occ_infants: 0,
         default_occupancy: Math.min(g.default_occupancy, g.occ_adults), room_kind: g.room_kind, capacity: g.room_kind === "dorm" ? g.capacity : null } }) });
-      rt = res.data.id;
+      rt = res.data.id; taken.add(rt); byTitle.set(String(title).trim().toLowerCase(), { id: rt, title });
     } else {
       await cx(`/room_types/${rt}`, { method: "PUT", body: JSON.stringify({ room_type: { title: g.title, count_of_rooms: g.count, occ_adults: g.occ_adults,
         occ_children: 0, occ_infants: 0, default_occupancy: Math.min(g.default_occupancy, g.occ_adults) } }) }).catch(() => {});
