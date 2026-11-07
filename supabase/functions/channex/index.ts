@@ -89,7 +89,23 @@ async function post(path: "/availability" | "/restrictions", values: unknown[]) 
   if (warnings.length) throw new Error(`Channex rejected part of the update: ${warnings.slice(0, 3).join("; ")}`);   // 200 OK can still carry rejected values
 }
 // Full sync: every restriction (rate, min stay, stop sell) and availability for the next days, one call per kind.
+// Rooms deleted (or regrouped) in NammaStay: forget them and take them off Channex too, so they stop being sold.
+async function pruneDeleted(propertyId: string, cxProp: string) {
+  const { data } = await admin.rpc("cx_prune", { p_property: propertyId });
+  for (const g of (data || []) as { cx_room_type_id?: string; cx_rate_plan_id?: string }[]) {
+    if (g.cx_rate_plan_id) await cx(`/rate_plans/${g.cx_rate_plan_id}`, { method: "DELETE" }).catch(() => {});
+    if (g.cx_room_type_id) {
+      await cx(`/room_types/${g.cx_room_type_id}`, { method: "DELETE" }).catch(async () => {
+        // Channex won't delete a room type that has bookings: close it instead (0 available).
+        const days = Array.from({ length: 500 }, (_, i) => new Date(Date.now() + i * 864e5).toISOString().slice(0, 10));
+        await post("/availability", [{ property_id: cxProp, room_type_id: g.cx_room_type_id, date_from: days[0], date_to: days[499], availability: 0 }]).catch(() => {});
+      });
+    }
+  }
+}
+
 async function push(propertyId: string, cxProp: string) {
+  await pruneDeleted(propertyId, cxProp);
   const { data, error } = await admin.rpc("cx_ari", { p_property: propertyId, p_days: 500 });
   if (error) throw new Error(error.message);
   // Rooms mapped to a different / deleted Channex property make Channex answer "Not found room_type": send only what exists there.
