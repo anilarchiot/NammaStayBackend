@@ -92,7 +92,15 @@ async function post(path: "/availability" | "/restrictions", values: unknown[]) 
 async function push(propertyId: string, cxProp: string) {
   const { data, error } = await admin.rpc("cx_ari", { p_property: propertyId, p_days: 500 });
   if (error) throw new Error(error.message);
-  const { availability, restrictions } = fullSyncValues(cxProp, (data || []) as Night[]);
+  // Rooms mapped to a different / deleted Channex property make Channex answer "Not found room_type": send only what exists there.
+  const { rooms, plans } = await channexPlans(cxProp);
+  const roomIds = new Set(rooms.map((r: { id: string }) => r.id));
+  const planIds = new Set(plans.map((p: { id: string }) => p.id));
+  const nights = ((data || []) as Night[]).filter((n) => roomIds.has(n.room_type_id) && planIds.has(n.rate_plan_id));
+  if (!nights.length && (data || []).length) {
+    throw new Error("None of your NammaStay rooms are linked to room types in this Channex property. Tap “Update rooms”, or use the Channex screen for rates and availability.");
+  }
+  const { availability, restrictions } = fullSyncValues(cxProp, nights);
   for (let i = 0; i < availability.length; i += FULL_SYNC_BATCH) await post("/availability", availability.slice(i, i + FULL_SYNC_BATCH));
   for (let i = 0; i < restrictions.length; i += FULL_SYNC_BATCH) await post("/restrictions", restrictions.slice(i, i + FULL_SYNC_BATCH));
   await admin.rpc("cx_mark", { p_property: propertyId, p_kind: "push", p_error: null });
