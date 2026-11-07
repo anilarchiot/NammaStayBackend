@@ -126,8 +126,8 @@ async function push(propertyId: string, cxProp: string) {
 // Rate plans and room types as they exist in Channex (for the rates / availability screen).
 async function channexPlans(cxProp: string) {
   const [rt, rpl] = await Promise.all([
-    cx(`/room_types?filter[property_id]=${cxProp}&pagination[limit]=200`),
-    cx(`/rate_plans?filter[property_id]=${cxProp}&pagination[limit]=200`),
+    cx(`/room_types?filter[property_id]=${cxProp}&pagination[limit]=100`),
+    cx(`/rate_plans?filter[property_id]=${cxProp}&pagination[limit]=100`),
   ]);
   const rooms = (rt.data || []).map((r: { id: string; attributes?: { title?: string } }) => ({ id: r.id, title: r.attributes?.title || r.id }));
   const title = Object.fromEntries(rooms.map((r: { id: string; title: string }) => [r.id, r.title]));
